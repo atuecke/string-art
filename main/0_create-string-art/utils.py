@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import pickle
 import cv2
+import dlib
 
 class StringArt():
     def __init__(self, image_path: str, num_anchors: int, line_darkness: float, num_lines: int, ) -> None:
@@ -17,6 +18,7 @@ class StringArt():
         self.line_darkness = line_darkness
         self.num_lines = num_lines
         self.img: np.ndarray = None
+        self.img_color: np.ndarray = None
         self.mask: np.ndarray = None
         self.center: tuple = None
         self.radius: int = None
@@ -32,16 +34,7 @@ class StringArt():
         self.data_folder = "../data"
         self.closest_neighbors = 10
 
-    def preprocess_image(self, edge_low_threshold=80, edge_high_threshold=180, edge_gaussian_blur_size=5, edge_dialate_iterations=3):
-        """Returns a 2D numpy array with a greyscale, square image
-        Args:
-            image_path: Path to the image file
-            img_size: The target dimensions of the output square image
-        Returns:
-            img: The numpy 2D array of the image
-            new_center: The center of the image
-            radius: The radius of the image
-        """
+    def load_img(self):
         # Load the image
         img = np.array(Image.open(self.image_path))
 
@@ -53,47 +46,52 @@ class StringArt():
         center = (int(height / 2), int(width / 2))
         radius = min(center[0], center[1])
 
-        # Crop the image
-        img = img[center[0]-radius:center[0]+radius, center[1]-radius:center[1]+radius, :]
+        self.img = img
+        self.center, self.radius = center, radius
 
-        importance_map = detect_edges_color(img_array=img, low_threshold=edge_low_threshold, high_threshold=edge_high_threshold, gaussian_blur_size=edge_gaussian_blur_size, dilate_iterations=edge_dialate_iterations)
-
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-        width, height = img.shape
-        center = (int(height / 2), int(width / 2))
-        # Create the circular mask
-        x, y = np.ogrid[-center[0]:width-center[0], -center[1]:height-center[1]]
-        mask = x*x + y*y <= radius*radius
-
-        # Apply the mask
-        img = np.multiply(img, mask)
-        importance_map = np.multiply(importance_map, mask)
+    def crop_img(self):
+        # Determine the center and radius
+        img = self.img
+        center, radius = self.center, self.radius
         
+        # Crop the image
+        self.img = img[center[0]-radius:center[0]+radius, center[1]-radius:center[1]+radius, :]
+
+    def make_greyscale(self):
+        img = self.img
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         # Normalize the image to [0, 1] and invert so that 1 is dark and 0 is bright
         img = 1 - np.array(img) / 255.0
+        self.img = img
 
-        if self.img_size is not None:
-            # Resize the image to pixel_number x pixel_number
-            img = Image.fromarray((img * 255).astype(np.uint8))
-            img = img.resize((self.img_size, self.img_size), Image.ANTIALIAS)
-            img = np.array(img) / 255.0
+    def apply_mask(self):
+        img = self.img
+        height, width = img.shape
+        center = self.center
+        radius = self.radius
 
-            importance_map = Image.fromarray((importance_map*255).astype(np.uint8))
-            importance_map = importance_map.resize((self.img_size, self.img_size), Image.ANTIALIAS)
-            importance_map = np.array(importance_map) / 255.0
+        # Create the circular mask
+        x, y = np.ogrid[-center[0]:width-center[0], -center[1]:height-center[1]]
+        self.mask = x*x + y*y <= radius*radius
 
-            # The center is now at the middle of the resized image
-            center = (int(self.img_size / 2), int(self.img_size / 2))
-            # Adjusted radius
-            radius = center[0]
+        # Apply the mask
+        self.img = np.multiply(img, self.mask)
+    
+    def resize_img(self):
+        self.img = resize_img(self.img, self.img_size)
+        height, width = self.img.shape
+        center = (int(height / 2), int(width / 2))
+        radius = min(center[0], center[1])
+        self.center, self.radius = center, radius
 
-            # The center is now at the middle of the cropped image
-            center = (radius, radius)
-        
-        importance_map *= self.importance_map_multiplier
-        importance_map += 1
 
-        self.img, self.center, self.radius, self.importance_map = img, center, radius, importance_map
+    def add_to_importance_map(self, new_map):
+        self.importance_map = np.add(self.importance_map, new_map)
+    
+    def finalize_importance_map(self):
+        self.importance_map = np.multiply(self.importance_map, self.mask)
+        self.importance_map *= self.importance_map_multiplier
+        self.importance_map += 1
 
     def create_anchors(self):
         """Creates a list of tuples, each being the cordinates of an anchor
@@ -118,132 +116,6 @@ class StringArt():
 
         self.mask = mask
     
-    def draw_line(self, p0: tuple, p1: tuple, multiplier: float, mask: np.ndarray):
-        """Creates a dictionary of coordinates and their darkness values of a line between two points. Uses Xiaolin Wu’s anti-aliasing algorithm
-        Args: 
-            p0: The first coordinate for the line
-            p1: The second cordinate for the line
-            multiplier: The darkness value that gets multiplied by each pixel
-            mask: The boolean mask for a circle
-        Returns:
-            A dictionary of each pixel in the line and their darkness value
-        """
-        
-        x0, y0 = p0
-        x1, y1 = p1
-        pixel_list = []
-        darkness_list = []
-        steep = abs(y1 - y0) > abs(x1 - x0)
-        if steep:
-            x0, y0 = y0, x0
-            x1, y1 = y1, x1
-
-        if x0 > x1:
-            x0, x1 = x1, x0
-            y0, y1 = y1, y0
-
-        dx = x1 - x0
-        dy = y1 - y0
-        gradient = dy / dx if dx != 0 else 1
-
-        # handle first endpoint (pixel) placement
-        xend = round(x0)
-        yend = y0 + gradient * (xend - x0)
-        xgap = 1 - ((x0 + 0.5) % 1)
-        xpxl1 = xend
-        ypxl1 = int(yend)
-        if steep:
-            try:
-                if mask[ypxl1, xpxl1]:
-                    pixel_list.append((ypxl1, xpxl1))
-                    darkness_list.append(xgap * (1 - (yend % 1)) * multiplier)
-            except IndexError:
-                pass
-            try:
-                if mask[ypxl1+1, xpxl1]:
-                    pixel_list.append((ypxl1+1, xpxl1))
-                    darkness_list.append(xgap * (yend % 1) * multiplier)
-            except IndexError:
-                pass
-        else:
-            try:
-                if mask[xpxl1, ypxl1]:
-                    pixel_list.append((xpxl1, ypxl1))
-                    darkness_list.append(xgap * (1 - (yend % 1)) * multiplier)
-            except IndexError:
-                pass
-            try:
-                if mask[xpxl1, ypxl1+1]:
-                    pixel_list.append((xpxl1, ypxl1+1))
-                    darkness_list.append(xgap * (yend % 1) * multiplier)
-            except IndexError:
-                pass
-        intery = yend + gradient
-
-        # handle second endpoint
-        xend = round(x1)
-        yend = y1 + gradient * (xend - x1)
-        xgap = (x1 + 0.5) % 1
-        xpxl2 = xend
-        ypxl2 = int(yend)
-        if steep:
-            try:
-                if mask[ypxl2, xpxl2]:
-                    pixel_list.append((ypxl2, xpxl2))
-                    darkness_list.append(xgap * (1 - (yend % 1)) * multiplier)
-            except IndexError:
-                pass
-            try:
-                if mask[ypxl2+1, xpxl2]:
-                    pixel_list.append((ypxl2+1, xpxl2))
-                    darkness_list.append(xgap * (yend % 1) * multiplier)
-            except IndexError:
-                pass
-        else:
-            try:
-                if mask[xpxl2, ypxl2]:
-                    pixel_list.append((xpxl2, ypxl2))
-                    darkness_list.append(xgap * (1 - (yend % 1)) * multiplier)
-            except IndexError:
-                pass
-            try:
-                if mask[xpxl2, ypxl2+1]:
-                    pixel_list.append((xpxl2, ypxl2+1))
-                    darkness_list.append(xgap * (yend % 1) * multiplier)
-            except IndexError:
-                pass
-
-        # main loop
-        for x in range(int(xpxl1 + 1), int(xpxl2)):
-            if steep:
-                try:
-                    if mask[int(intery), x]:
-                        pixel_list.append((int(intery), x))
-                        darkness_list.append((1 - (intery % 1)) * multiplier)
-                except IndexError:
-                    pass
-                try:
-                    if mask[int(intery)+1, x]:
-                        pixel_list.append((int(intery)+1, x))
-                        darkness_list.append((intery % 1) * multiplier)
-                except IndexError:
-                    pass
-            else:
-                try:
-                    if mask[x, int(intery)]:
-                        pixel_list.append((x, int(intery)))
-                        darkness_list.append((1 - (intery % 1)) * multiplier)
-                except IndexError:
-                    pass
-                try:
-                    if mask[x, int(intery)+1]:
-                        pixel_list.append((x, int(intery)+1))
-                        darkness_list.append((intery % 1) * multiplier)
-                except IndexError:
-                    pass
-            intery += gradient
-        return np.array(pixel_list), np.array(darkness_list)
-    
     def benchmark_line_dict(self):
 
         def find_all_lines(start_anchor):
@@ -254,7 +126,7 @@ class StringArt():
                 if end_anchor is not start_anchor:
                     both_anchors = tuple(sorted((start_anchor, end_anchor)))
                     if both_anchors not in line_pixel_list:
-                        pixel_list, darkness_list = self.draw_line(both_anchors[0], both_anchors[1], self.line_darkness, self.mask)
+                        pixel_list, darkness_list = draw_line(both_anchors[0], both_anchors[1], self.line_darkness, self.mask)
                         line_pixel_list[both_anchors] = pixel_list
                         line_darkness_list[both_anchors] = darkness_list
             return line_pixel_list, line_darkness_list
@@ -290,7 +162,7 @@ class StringArt():
                     if self.is_within_range(self.anchors, start_index, end_index, self.closest_neighbors): continue #You cant make a line between two of the same anchors
                     both_anchors = tuple(sorted((start_anchor, end_anchor))) #Sorts the indices for the lines.
                     if both_anchors not in line_pixel_dict: #Makes sure that the anchors aren't already in the dictionary, only in a different order. This makes the number of lines needed n choose 2.
-                        pixel_list, darkness_list = self.draw_line(both_anchors[0], both_anchors[1], self.line_darkness, self.mask) #Draws the line
+                        pixel_list, darkness_list = draw_line(both_anchors[0], both_anchors[1], self.line_darkness, self.mask) #Draws the line
                         line_pixel_dict[both_anchors] = pixel_list
                         line_darkness_dict[both_anchors] = darkness_list
             print("Done!")
@@ -355,7 +227,7 @@ class StringArt():
                 best_loss = temp_loss
                 best_anchors = both_anchors
                 best_end_anchor = end_anchor
-        return best_anchors, best_end_anchor
+        return best_anchors, best_end_anchor, best_loss
     
     def benchmark_string_art(self):
         #benchmark
@@ -370,7 +242,7 @@ class StringArt():
         """Updates the overall loss value, string_art_img pixels, and difference_img pixels after finding the best line"""
         
         # Draw the line and get the pixel locations and values
-        line_pixels, line_values = self.draw_line(best_anchors[0], best_anchors[1], self.line_darkness, self.mask)
+        line_pixels, line_values = draw_line(best_anchors[0], best_anchors[1], self.line_darkness, self.mask)
         
         # Split the line_pixels into separate x and y arrays
         x_coords = line_pixels[:, 0]
@@ -387,9 +259,19 @@ class StringArt():
         self.anchor_list.append(starting_anchor)
         current_anchor = starting_anchor
         for i in tqdm(range(self.num_lines), desc="Drawing Line"):
-            best_anchors, current_anchor = self.find_best_line(current_anchor)
+            best_anchors, current_anchor, best_loss = self.find_best_line(current_anchor)
             self.update_with_best_line(best_anchors)
             self.anchor_list.append(current_anchor)
+
+    def ooga_booga_mode(self):
+        for i in tqdm(range(self.num_lines)):
+            best_loss = np.inf
+            for start_anchor in range(len(self.anchors)):
+                anchors, current_anchor, loss = self.find_best_line(start_anchor)
+                if(loss < best_loss):
+                    best_loss, best_anchors = loss, anchors
+            self.update_with_best_line(best_anchors)
+
 
     def save_data(self, directory):
         """Saves the given numpy arrays as JPG images in the specified directory."""
@@ -414,27 +296,6 @@ class StringArt():
         with open(f"{directory}/config.pkl", 'wb') as file:
             pickle.dump(config_pkl, file)
 
-    
-    def run_all(self, save_dir:str):
-        print("Preprocessing Image")
-        self.preprocess_image()
-        print("Creating Anchors")
-        self.create_anchors()
-        print("Creating Circle Mask")
-        self.create_circle_mask()
-        self.benchmark_line_dict()
-        print("Generating line dict")
-        self.make_line_dict()
-        print("Making string art dict")
-        self.create_string_art_img()
-        print("Making difference dict")
-        self.create_difference_img()
-        self.benchmark_string_art()
-        print("Creating string art")
-        self.create_string_art()
-        print(f"Saving output to {save_dir}")
-        self.save_data(save_dir)
-        print("Done!")
 
 def save_image(image, directory, name):
             image_data = (1-np.transpose(image))*255
@@ -475,6 +336,7 @@ def detect_edges_color(img_array, low_threshold=50, high_threshold=150, gaussian
         edges_combined = cv2.dilate(edges_combined, kernel, iterations=dilate_iterations)
     
     normalized_edges = edges_combined / 255.0
+
     return normalized_edges
 
 def draw_line(p0: tuple, p1: tuple, multiplier: float, mask: np.ndarray):
@@ -632,3 +494,71 @@ def create_img_from_anchors(data_dir, percents):
 
             if line+1 in num_lines:
                 save_image(img, data_dir, f"{line+1}_lines.jpg")
+
+def outline_facial_features(image_array, 
+                            predictor_path="shape_predictor_68_face_landmarks.dat",
+                            feature_thickness=5,
+                            blur_size=7):
+    
+    image_array = image_array.transpose(1, 0, 2)
+
+    # Convert the 3D numpy array to grayscale
+    gray = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
+
+    # Load the facial detector and landmark predictor
+    detector = dlib.get_frontal_face_detector()
+    predictor = dlib.shape_predictor(predictor_path)
+
+    # Detect faces in the grayscale image
+    faces = detector(gray)
+
+    # Initialize heatmap canvas to white
+    heatmap = np.ones_like(gray) * 255
+
+    for face in faces:
+        # Predict landmarks
+        landmarks = predictor(gray, face)
+
+        # Define facial features
+        features_to_fill = [
+            list(range(17, 22)),    # Right eyebrow
+            list(range(22, 27)),    # Left eyebrow
+            list(range(36, 42)),    # Right eye
+            list(range(42, 48)),    # Left eye
+            list(range(48, 61)),    # Outer lips
+            [27, 31, 32, 33, 34, 35] # Nose
+        ]
+
+        features_to_draw = [
+            list(range(0, 17)),     # Jaw
+        ]
+
+        # Draw polygons around facial features that need filling in black
+        for feature in features_to_fill:
+            points = [(landmarks.part(n).x, landmarks.part(n).y) for n in feature]
+            points = np.array(points, dtype=np.int32)
+            cv2.fillPoly(heatmap, [points], color=0)
+
+        # Draw straight lines for features
+        for feature in features_to_draw:
+            points = [(landmarks.part(n).x, landmarks.part(n).y) for n in feature]
+            points = np.array(points, dtype=np.int32)
+            cv2.polylines(heatmap, [points], isClosed=False, color=0, thickness=feature_thickness)
+
+        # Erode the features to increase their size
+        kernel = np.ones((feature_thickness, feature_thickness), np.uint8)
+        heatmap = cv2.erode(heatmap, kernel, iterations=1)
+
+    # Blur the heatmap for smoother transition
+    heatmap = cv2.GaussianBlur(heatmap, (blur_size, blur_size), 0)
+    heatmap = 1 - (heatmap / 255)
+    heatmap = heatmap.T
+
+    return heatmap
+
+def resize_img(img: np.ndarray, img_size: int):
+    img = Image.fromarray((img * 255).astype(np.uint8))
+    img = img.resize((img_size, img_size), Image.ANTIALIAS)
+    img = np.array(img) / 255.0
+    
+    return img
