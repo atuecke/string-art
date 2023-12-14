@@ -14,6 +14,7 @@ from skimage.metrics import structural_similarity as ssim
 import math
 import multiprocessing
 from itertools import product
+import random
 
 class BaseImage():
     """
@@ -212,7 +213,7 @@ def difference(a, b):
         """
         return np.abs(a - b)
 
-def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: StringArtImage, line_pixel_dict: dict, line_darkness_dict: dict, iterations: int, loss_method: str = "difference_img", max_darkness: float = None, eval_interval: int = 100, importance_map: ImportanceMap = None):
+def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: StringArtImage, line_pixel_dict: dict, line_darkness_dict: dict, iterations: int, loss_method: str = "difference_img", max_darkness: float = None, eval_interval: int = None, importance_map: ImportanceMap = None, time_saver: float = 1):
     """
     Creates the completed string art
 
@@ -248,7 +249,29 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
             best_anchors: The tuple of the two best anchors
             best_loss: The best line loss found
         """
+        line_list = []
+        for start_anchor_idx in get_neighbors(string_art_img.anchors, previous_anchor_idx): #Finds the neighbors of the start anchor
+            for end_anchor_idx in range(len(string_art_img.anchors)):
+                both_anchors = tuple(sorted((start_anchor_idx, end_anchor_idx))) #Makes sure to get the right order for the indices, set in make_line_dict().
+                if both_anchors not in line_pixel_dict: continue
+                line_list.append(both_anchors)
+        
+        num_to_select = int(len(line_list) * time_saver)
+        line_list = random.sample(line_list, num_to_select)
+        
         best_loss = np.inf #TODO set this to the starting loss and make the algorithm terminate when there isn't a possible improvement
+        best_anchors = None
+        for start_anchor_idx in get_neighbors(string_art_img.anchors, previous_anchor_idx): #Finds the neighbors of the start anchor
+            for end_anchor_idx in range(len(string_art_img.anchors)):
+                both_anchors = tuple(sorted((start_anchor_idx, end_anchor_idx))) #Makes sure to get the right order for the indices, set in make_line_dict().
+                if both_anchors not in line_list: continue
+                temp_loss = find_loss(line_pixel_dict[both_anchors], line_darkness_dict[both_anchors]) #Finds the loss of that string
+                if(temp_loss < best_loss): #Updates best loss if temp loss is better
+                    best_loss = temp_loss
+                    best_anchors = both_anchors
+        return best_anchors, best_loss
+
+        """best_loss = np.inf #TODO set this to the starting loss and make the algorithm terminate when there isn't a possible improvement
         best_anchors = None
         for start_anchor_idx in get_neighbors(string_art_img.anchors, previous_anchor_idx): #Finds the neighbors of the start anchor
             for end_anchor_idx in range(len(string_art_img.anchors)):
@@ -258,7 +281,7 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
                 if(temp_loss < best_loss): #Updates best loss if temp loss is better
                     best_loss = temp_loss
                     best_anchors = both_anchors
-        return best_anchors, best_loss
+        return best_anchors, best_loss"""
     
     def find_loss(string_pixels: list, string_darkness_values: list):
         """
