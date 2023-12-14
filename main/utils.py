@@ -106,28 +106,37 @@ class ImportanceMap():
     A map of importance of different pixels across the string art, higher value means more importance
 
     Attributes:
-        map: The map image
+        img: The map image
         blur: The (optional) gaussian blur applied to the importance map
     """
     def __init__(
             self,
-            map: np.ndarray = None
+            img: np.ndarray = None
     ) -> None:
         """
         Args:
             map: The map image
         """
-        self.map = map
+        self.img = img
         self.blur: tuple = None
 
     def apply_gaussian_blur(self, blur_size: int):
         """
         Applies a gaussian blur to the importance map
         Args:
-            blur_size: The diameter (in pixels) of the gaussian blur, must be an odd integer.
+            blur_size: The diameter (in pixels) of the gaussian blur, must be an odd integer
         """
-        self.map = cv2.GaussianBlur(self.img, (blur_size, blur_size), 0)
+        self.img = cv2.GaussianBlur(self.img, (blur_size, blur_size), 0)
         self.blur = blur_size
+
+    def apply_dynamic_sigmoid(self, max=1):
+        """
+        Applies a dynamic sigmoid function to the importance map, normalizing the map.
+        """
+        sigma = np.std(self.img)
+        if sigma == 0: sigma = 1
+        transformed = max / (1 + np.exp(-self.img/sigma))
+        self.img = transformed
 
 def make_line_dict(data_folder:str, string_art_img: StringArtImage, closest_neighbors: int = 10):
     """
@@ -173,6 +182,7 @@ def make_line_dict(data_folder:str, string_art_img: StringArtImage, closest_neig
         print("Opening existing line dictionary")
         with open(pkl_path, "rb") as file:
             line_dicts = pickle.load(file)
+            print("Done!")
             return line_dicts["line_pixel_dict"], line_dicts["line_darkness_dict"]
     else:
         print("Creating new line dictionary")
@@ -185,24 +195,24 @@ def make_line_dict(data_folder:str, string_art_img: StringArtImage, closest_neig
                 if both_anchors not in line_pixel_dict: #Makes sure that the anchors aren't already in the dictionary, only in a different order. This makes the number of lines needed n choose 2.
                     pixel_list, darkness_list = draw_line(p0=anchors[both_anchors[0]].coordinates, p1=anchors[both_anchors[1]].coordinates, multiplier=line_darkness, mask=mask)
                     line_pixel_dict[both_anchors], line_darkness_dict[both_anchors] = pixel_list, darkness_list
-        print("Done!")
+        print("Saving new line dictionary")
 
         #Saves it for future use
         with open(pkl_path, 'wb') as file:
             pickle.dump({"line_pixel_dict": line_pixel_dict, "line_darkness_dict": line_darkness_dict}, file)
+        print("Done!")
         return line_pixel_dict, line_darkness_dict
 
 def difference(a, b):
         """
-        Calculate the absolute difference between two pixel values
-
+        Calculates the absolute difference between two pixel values
         Args:
             a: The first value/values
             b: The second value/values
         """
         return np.abs(a - b)
 
-def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: StringArtImage, line_pixel_dict: dict, line_darkness_dict: dict, iterations: int, loss_method: str = "difference_img", max_darkness: float = None, eval_interval: int = 100):
+def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: StringArtImage, line_pixel_dict: dict, line_darkness_dict: dict, iterations: int, loss_method: str = "difference_img", max_darkness: float = None, eval_interval: int = 100, importance_map: ImportanceMap = None):
     """
     Creates the completed string art
 
@@ -216,12 +226,16 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
         loss_method: The method that the function uses to determine the loss of a line
         max_darkness: The maximum darkness of a line in the string art image. If set to none, there is no limit
         eval_interval: Evalutate the entire image on this interval, saved in the returned string_art_img
+        importance_map: The image map of importance values for each pixel
 
     Returns:
         string_art_img: The final string art image
         difference_img: The difference image used in this creation
     """
     difference_img = np.zeros_like(base_img)
+    if not importance_map:
+        importance_map = np.ones(string_art_img.img.shape)
+    importance_map = importance_map.img
                     
     def find_best_line(previous_anchor_idx: int):
         """
@@ -263,12 +277,13 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
 
         target_darkness_values = base_img[x_coords, y_coords]
         total_darkness_values = string_art_img.img[x_coords, y_coords] + string_darkness_values
+        importace_values = importance_map[x_coords, y_coords]
 
         #Use the loss method set in parameters
         match loss_method:
             case "difference_img":
                 diff_values = difference_img[x_coords, y_coords]
-                weighted_difference = difference(target_darkness_values, total_darkness_values) - diff_values
+                weighted_difference = importace_values * (difference(target_darkness_values, total_darkness_values) - diff_values)
                 loss = np.sum(weighted_difference)/len(string_pixels)
             case "euclidean_distance":
                 loss = np.linalg.norm(target_darkness_values - total_darkness_values)/len(string_pixels)
@@ -294,6 +309,7 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
     for iter in tqdm(range(iterations)):
         best_anchors, best_loss = find_best_line(previous_anchor_idx=previous_anchor_idx)
 
+        #Load the best line and add it to the string art image
         best_string_pixels, best_string_darkness_values = line_pixel_dict[best_anchors], line_darkness_dict[best_anchors]
         x_coords = best_string_pixels[:, 0]
         y_coords = best_string_pixels[:, 1]
@@ -308,6 +324,8 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
         previous_anchor_idx = best_anchors[0]
         string_art_img.string_path.append(best_anchors)
         string_art_img.loss_list.append(best_loss)
+
+        #Evaluate the string art
         if eval_interval:
             if iter%eval_interval == 0:
                 similarity = compare_images(string_art_img.img, base_img, method="ssim")
@@ -553,3 +571,114 @@ def compare_images(input_img, target_img, method):
 
     
     return similarity
+
+def open_importance_maps(folder_path: str, string_art_img_shape: tuple):
+    importance_map_list = []
+    files = os.listdir(folder_path)
+    
+    for file in files:
+        file_path = os.path.join(folder_path, file)
+
+        # Check if the file is an image (e.g., jpg, png, etc.)
+        if file_path.lower().endswith(('.png', '.jpg', '.jpeg')):
+            img = np.array(Image.open(file_path))
+            # Transpose only the first two dimensions to switch x and y coordinates
+            img = img.transpose(1, 0, 2)
+            img = resize_img(img=img, radius=string_art_img_shape[0])
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            img = img / 255
+            importance_map = ImportanceMap(img=img)
+            importance_map_list.append(importance_map)
+
+    return importance_map_list
+
+def outline_importance_map(importance_map: ImportanceMap, edge_thickness = 3):
+    """
+    """
+    edges = detect_edges_color(img_array=importance_map.img, gaussian_blur_size=1, dilate_iterations=edge_thickness)
+    edge_importance_map = ImportanceMap(img=edges)
+    return edge_importance_map
+
+def combine_importance_maps(all_maps: list):
+    shape = all_maps[0].img.shape
+    sum_maps = np.zeros(shape)
+    for map in all_maps:
+        sum_maps += map.img
+    
+    overall_map = ImportanceMap(img=sum_maps)
+    return overall_map
+
+    
+def detect_edges_grayscale(img_array, low_threshold=50, high_threshold=150, gaussian_blur_size=5, dilate_iterations=1):
+    """
+    Detects edges in a grayscale image using the Canny edge detector.
+    
+    Parameters:
+        - img_array: 2D numpy array representing the grayscale image
+        - low_threshold, high_threshold: thresholds for the Canny edge detector. Edges with intensity gradient more than 'high_threshold' 
+          are sure to be edges and those below 'low_threshold' are sure to be non-edges.
+        - gaussian_blur_size: kernel size for Gaussian blur pre-processing.
+        - dilate_iterations: number of dilation iterations to make the edges thicker.
+
+    Returns:
+        normalized_edges: 2D numpy array representing the normalized edges in the image.
+    """
+    img_array = img_array*255
+    # Ensure the image is a grayscale image
+    if len(img_array.shape) != 2:
+        raise ValueError("The input image must be a grayscale image")
+    
+    # Apply Gaussian blur
+    img_blurred = cv2.GaussianBlur(img_array, (gaussian_blur_size, gaussian_blur_size), 0)
+    
+    # Detect edges using Canny
+    edges = cv2.Canny(img_blurred, low_threshold, high_threshold)
+    
+    # Dilation makes edges thicker
+    if dilate_iterations > 0:
+        kernel = np.ones((3,3), np.uint8)
+        edges = cv2.dilate(edges, kernel, iterations=dilate_iterations)
+    
+    # Normalize the edge image
+    normalized_edges = edges / 255.0
+
+    return normalized_edges
+
+
+def detect_edges_color(img_array, low_threshold=50, high_threshold=150, gaussian_blur_size=5, dilate_iterations=1):
+    """
+    Detects edges in an image using the Canny edge detector, but processes RGB images for better precision.
+    
+    Parameters:
+        - img_array: 3D numpy array representing the image
+        - low_threshold, high_threshold: thresholds for the Canny edge detector. Edges with intensity gradient more than 'high_threshold' 
+          are sure to be edges and those below 'low_threshold' are sure to be non-edges.
+        - gaussian_blur_size: kernel size for Gaussian blur pre-processing.
+        - dilate_iterations: number of dilation iterations to make the edges thicker.
+
+    Returns:
+        edges_combined: 2D numpy array representing the edges in the image.
+    """
+    
+    # Ensure the image is in RGB format
+    if len(img_array.shape) == 2:
+        img_array = np.interp(img_array, (img_array.min(), img_array.max()), (0, 255)).astype(np.uint8)
+        img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
+    
+    # Apply Gaussian blur
+    img_blurred = cv2.GaussianBlur(img_array, (gaussian_blur_size, gaussian_blur_size), 0)
+    
+    # Detect edges using Canny for each channel and combine
+    edges_r = cv2.Canny(img_blurred[:,:,0], low_threshold, high_threshold)
+    edges_g = cv2.Canny(img_blurred[:,:,1], low_threshold, high_threshold)
+    edges_b = cv2.Canny(img_blurred[:,:,2], low_threshold, high_threshold)
+    edges_combined = edges_r | edges_g | edges_b
+    
+    # Dilation makes edges thicker
+    if dilate_iterations > 0:
+        kernel = np.ones((3,3), np.uint8)
+        edges_combined = cv2.dilate(edges_combined, kernel, iterations=dilate_iterations)
+    
+    normalized_edges = edges_combined / 255.0
+
+    return normalized_edges
