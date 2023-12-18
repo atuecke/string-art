@@ -213,7 +213,7 @@ def difference(a, b):
         """
         return np.abs(a - b)
 
-def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: StringArtImage, line_pixel_dict: dict, line_darkness_dict: dict, iterations: int, loss_method: str = "difference_img", max_darkness: float = None, eval_interval: int = None, importance_map: ImportanceMap = None, faster_dtype: bool = False):
+def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: StringArtImage, line_pixel_dict: dict, line_darkness_dict: dict, iterations: int, loss_method: str = "difference_img", max_darkness: float = None, eval_interval: int = None, importance_map: ImportanceMap = None):
     """
     Creates the completed string art
 
@@ -233,25 +233,9 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
         string_art_img: The final string art image
         difference_img: The difference image used in this creation
     """
-    anchor_line_idx = {}
-    base_img_lines = []
-    importance_lines = []
-    string_pixel_array = []
-    string_darkness_array = []
-    max_len = []
-    print("Building line arrays")
-    for idx, anchors in enumerate(line_pixel_dict.keys()):
-        pixels = line_pixel_dict[anchors]
-        x_coords = pixels[:, 0]
-        y_coords = pixels[:, 1]
-        max_len.append(len(x_coords))
-        anchor_line_idx[anchors] = idx
-        base_img_lines.append(base_img[x_coords, y_coords])
-        importance_lines.append(importance_map.img[x_coords, y_coords])
-        string_pixel_array.append(pixels)
-        string_darkness_array.append(line_darkness_dict[anchors])
-    print("Done!")
-    print(np.max(max_len))
+    difference_img = np.zeros_like(base_img)
+    changes_mask = np.zeros(string_art_img.img.shape, dtype=bool)
+    line_costs = {}
    
     if not importance_map:
         importance_map = np.ones(string_art_img.img.shape)
@@ -275,26 +259,32 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
                 both_anchors = tuple(sorted((start_anchor_idx, end_anchor_idx))) #Makes sure to get the right order for the indices, set in make_line_dict().
                 if both_anchors not in line_pixel_dict: continue
                 #temp_loss = find_loss(line_pixel_dict[both_anchors], line_darkness_dict[both_anchors])
-                line_idx = anchor_line_idx[both_anchors]
-                temp_loss = find_loss_efficient(line_idx)
+                temp_loss = find_loss_efficient(both_anchors)
                 if(temp_loss < best_loss): #Updates best loss if temp loss is better
                     best_loss = temp_loss
                     best_anchors = both_anchors
         return best_anchors, best_loss
     
-    def find_loss_efficient(line_idx):
-        """
-        """
-        x_coords = string_pixel_array[line_idx][:, 0]
-        y_coords = string_pixel_array[line_idx][:, 1]
+    def find_loss_efficient(both_anchors):
+        string_pixels = line_pixel_dict[both_anchors]
+        filtered_mask = changes_mask[string_pixels[:, 0], string_pixels[:, 1]]
+        subset_coords = string_pixels[filtered_mask]
+        if len(subset_coords) > 0:
+            x_coords = subset_coords[:, 0]
+            y_coords = subset_coords[:, 1]
 
-        string_art_values = string_art_img.img[x_coords, y_coords]
-        total_darkness_values = string_art_values + string_darkness_array[line_idx]
-        diff_values = difference(base_img_lines[line_idx], string_art_values)
+            target_darkness_values = base_img[x_coords, y_coords]
+            total_darkness_values = string_art_img.img[x_coords, y_coords] + line_darkness_dict[both_anchors][filtered_mask]
+            importace_values = importance_map[x_coords, y_coords]
 
-        weighted_difference = importance_lines[line_idx] * (difference(base_img_lines[line_idx], total_darkness_values) - diff_values)
-        loss = np.sum(weighted_difference)/len(x_coords)
-        return loss
+            diff_values = difference_img[x_coords, y_coords]
+            weighted_difference = importace_values * (difference(target_darkness_values, total_darkness_values) - diff_values)
+            loss = np.sum(weighted_difference)/len(string_pixels)
+
+            line_costs[both_anchors] += loss
+            #changes_mask[x_coords, y_coords] = False
+
+        return line_costs[both_anchors]
 
 
 
@@ -309,6 +299,7 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
         Returns:
             loss: The loss value of that string
         """
+
         x_coords = string_pixels[:, 0]
         y_coords = string_pixels[:, 1]
 
@@ -319,7 +310,7 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
         #Use the loss method set in parameters
         match loss_method:
             case "difference_img":
-                diff_values = 1 #change this lmao
+                diff_values = difference_img[x_coords, y_coords]
                 weighted_difference = importace_values * (difference(target_darkness_values, total_darkness_values) - diff_values)
                 loss = np.sum(weighted_difference)/len(string_pixels)
             case "euclidean_distance":
@@ -337,9 +328,13 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
         
         return loss
     
-    if faster_dtype:
-        string_art_img.img = string_art_img.img.astype(np.float16)
-
+    #If the loss method is difference img, create the difference image
+    if loss_method == "difference_img":
+        difference_img[string_art_img.mask] = difference(0, base_img[string_art_img.mask])
+    
+    for anchors in line_pixel_dict.keys():
+        line_costs[anchors] = find_loss(line_pixel_dict[anchors], line_darkness_dict[anchors])
+    
     previous_anchor_idx = first_anchor
     for iter in tqdm(range(iterations)):
         best_anchors, best_loss = find_best_line(previous_anchor_idx=previous_anchor_idx)
@@ -348,12 +343,16 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
         best_string_pixels, best_string_darkness_values = line_pixel_dict[best_anchors], line_darkness_dict[best_anchors]
         x_coords = best_string_pixels[:, 0]
         y_coords = best_string_pixels[:, 1]
+
+        changes_mask[x_coords, y_coords] = True
         
         if max_darkness:
             new_values = np.clip(string_art_img.img[x_coords, y_coords] + best_string_darkness_values, 0, max_darkness)
+            difference_img[x_coords, y_coords] = difference(base_img[x_coords, y_coords], new_values)
             string_art_img.img[x_coords, y_coords] = new_values
         else:
             new_values = string_art_img.img[x_coords, y_coords] + best_string_darkness_values
+            difference_img[x_coords, y_coords] = difference(base_img[x_coords, y_coords], new_values)
             string_art_img.img[x_coords, y_coords] = new_values
         previous_anchor_idx = best_anchors[0]
         string_art_img.string_path.append(best_anchors)
@@ -365,7 +364,7 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
                 similarity = compare_images(string_art_img.img, base_img, method="ssim")
                 string_art_img.similarities.append((iter, similarity))
     
-    return string_art_img
+    return string_art_img, difference_img
 
 def save_string_art(string_art_img: StringArtImage, directory: str):
     # Check if directory exists; if not, create it
