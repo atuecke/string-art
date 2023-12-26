@@ -139,6 +139,21 @@ class ImportanceMap():
         transformed = max / (1 + np.exp(-self.img/sigma))
         self.img = transformed
 
+class StringLine():
+    def __init__(
+            self,
+            base_image,
+            importance_values,
+            string_pixels,
+            string_darkness
+    ) -> None:
+        """
+        """
+        self.base_image = base_image
+        self.importace_values = importance_values
+        self.string_pixels = string_pixels
+        self.string_darkness = string_darkness
+
 def make_line_dict(data_folder:str, string_art_img: StringArtImage, closest_neighbors: int = 10):
     """
     Makes a dictionary of every pixel and its darkness value for each line for every possible combination of anchors
@@ -234,24 +249,21 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
         difference_img: The difference image used in this creation
     """
     anchor_line_idx = {}
-    base_img_lines = []
-    importance_lines = []
-    string_pixel_array = []
-    string_darkness_array = []
-    max_len = []
+    lines = []
     print("Building line arrays")
     for idx, anchors in enumerate(line_pixel_dict.keys()):
         pixels = line_pixel_dict[anchors]
         x_coords = pixels[:, 0]
         y_coords = pixels[:, 1]
-        max_len.append(len(x_coords))
+
         anchor_line_idx[anchors] = idx
-        base_img_lines.append(base_img[x_coords, y_coords])
-        importance_lines.append(importance_map.img[x_coords, y_coords])
-        string_pixel_array.append(pixels)
-        string_darkness_array.append(line_darkness_dict[anchors])
+        lines.append(StringLine(
+            base_image=base_img[x_coords, y_coords],
+            importance_values=importance_map.img[x_coords, y_coords],
+            string_pixels=pixels,
+            string_darkness=line_darkness_dict[anchors]
+        ))
     print("Done!")
-    print(np.max(max_len))
    
     if not importance_map:
         importance_map = np.ones(string_art_img.img.shape)
@@ -276,65 +288,26 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
                 if both_anchors not in line_pixel_dict: continue
                 #temp_loss = find_loss(line_pixel_dict[both_anchors], line_darkness_dict[both_anchors])
                 line_idx = anchor_line_idx[both_anchors]
-                temp_loss = find_loss_efficient(line_idx)
+                temp_loss = find_loss(line_idx)
                 if(temp_loss < best_loss): #Updates best loss if temp loss is better
                     best_loss = temp_loss
                     best_anchors = both_anchors
         return best_anchors, best_loss
     
-    def find_loss_efficient(line_idx):
+    def find_loss(line_idx):
         """
         """
-        x_coords = string_pixel_array[line_idx][:, 0]
-        y_coords = string_pixel_array[line_idx][:, 1]
+        line: StringLine = lines[line_idx]
+        
+        x_coords = line.string_pixels[:, 0]
+        y_coords = line.string_pixels[:, 1]
 
         string_art_values = string_art_img.img[x_coords, y_coords]
-        total_darkness_values = string_art_values + string_darkness_array[line_idx]
-        diff_values = difference(base_img_lines[line_idx], string_art_values)
+        total_darkness_values = string_art_values + line.string_darkness
+        diff_values = difference(line.base_image, string_art_values)
 
-        weighted_difference = importance_lines[line_idx] * (difference(base_img_lines[line_idx], total_darkness_values) - diff_values)
+        weighted_difference = line.importace_values * (difference(line.base_image, total_darkness_values) - diff_values)
         loss = np.sum(weighted_difference)/len(x_coords)
-        return loss
-
-
-
-    def find_loss(string_pixels: list, string_darkness_values: list):
-        """
-        Finds the loss for one string
-
-        Args:
-            string_pixels: The list of the string pixel coordinates
-            string_darkness_values: The list of the darkness values for the string
-
-        Returns:
-            loss: The loss value of that string
-        """
-        x_coords = string_pixels[:, 0]
-        y_coords = string_pixels[:, 1]
-
-        target_darkness_values = base_img[x_coords, y_coords]
-        total_darkness_values = string_art_img.img[x_coords, y_coords] + string_darkness_values
-        importace_values = importance_map[x_coords, y_coords]
-
-        #Use the loss method set in parameters
-        match loss_method:
-            case "difference_img":
-                diff_values = 1 #change this lmao
-                weighted_difference = importace_values * (difference(target_darkness_values, total_darkness_values) - diff_values)
-                loss = np.sum(weighted_difference)/len(string_pixels)
-            case "euclidean_distance":
-                loss = np.linalg.norm(target_darkness_values - total_darkness_values)/len(string_pixels)
-            case "MAE:":
-                loss = np.mean(np.abs(target_darkness_values - total_darkness_values))
-            case "MSE":
-                loss = np.mean((target_darkness_values - total_darkness_values) ** 2)
-            case "RMSE":
-                loss = np.sqrt(np.mean((target_darkness_values - total_darkness_values) ** 2))
-            case "MSLE":
-                loss = np.mean((np.log1p(target_darkness_values) - np.log1p(total_darkness_values)) ** 2)
-            case "cosine_proximity":
-                loss = -np.dot(target_darkness_values, total_darkness_values) / (np.linalg.norm(target_darkness_values) * np.linalg.norm(total_darkness_values))/len(string_pixels)
-        
         return loss
     
     if faster_dtype:
