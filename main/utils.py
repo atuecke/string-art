@@ -15,6 +15,7 @@ import math
 import multiprocessing
 from itertools import product
 import random
+import scipy.stats as stats
 
 class BaseImage():
     """
@@ -150,7 +151,7 @@ class StringLine():
         """
         """
         self.base_image = base_image
-        self.importace_values = importance_values
+        self.importance_values = importance_values
         self.string_pixels = string_pixels
         self.string_darkness = string_darkness
 
@@ -228,7 +229,7 @@ def difference(a, b):
         """
         return np.abs(a - b)
 
-def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: StringArtImage, line_pixel_dict: dict, line_darkness_dict: dict, iterations: int, loss_method: str = "difference_img", max_darkness: float = None, eval_interval: int = None, importance_map: ImportanceMap = None, faster_dtype: bool = False):
+def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: StringArtImage, line_pixel_dict: dict, line_darkness_dict: dict, iterations: int, loss_method: str = "mean_error", max_darkness: float = None, eval_interval: int = None, importance_map: ImportanceMap = None):
     """
     Creates the completed string art
 
@@ -250,6 +251,9 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
     """
     anchor_line_idx = {}
     lines = []
+    if not importance_map:
+        importance_map = ImportanceMap(img=np.ones_like(base_img))
+    
     print("Building line arrays")
     for idx, anchors in enumerate(line_pixel_dict.keys()):
         pixels = line_pixel_dict[anchors]
@@ -282,17 +286,20 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
         """
         best_loss = np.inf #TODO set this to the starting loss and make the algorithm terminate when there isn't a possible improvement
         best_anchors = None
+        best_end_anchor = None
+        best_start_anchor = None
         for start_anchor_idx in get_neighbors(string_art_img.anchors, previous_anchor_idx): #Finds the neighbors of the start anchor
             for end_anchor_idx in range(len(string_art_img.anchors)):
                 both_anchors = tuple(sorted((start_anchor_idx, end_anchor_idx))) #Makes sure to get the right order for the indices, set in make_line_dict().
                 if both_anchors not in line_pixel_dict: continue
-                #temp_loss = find_loss(line_pixel_dict[both_anchors], line_darkness_dict[both_anchors])
                 line_idx = anchor_line_idx[both_anchors]
                 temp_loss = find_loss(line_idx)
                 if(temp_loss < best_loss): #Updates best loss if temp loss is better
                     best_loss = temp_loss
                     best_anchors = both_anchors
-        return best_anchors, best_loss
+                    best_end_anchor = end_anchor_idx
+                    best_start_anchor = start_anchor_idx
+        return best_anchors, best_loss, best_start_anchor, best_end_anchor
     
     def find_loss(line_idx):
         """
@@ -304,18 +311,31 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
 
         string_art_values = string_art_img.img[x_coords, y_coords]
         total_darkness_values = string_art_values + line.string_darkness
-        diff_values = difference(line.base_image, string_art_values)
-
-        weighted_difference = line.importace_values * (difference(line.base_image, total_darkness_values) - diff_values)
-        loss = np.sum(weighted_difference)/len(x_coords)
+        match loss_method:
+            case "differences":
+                diff_values = difference(line.base_image, string_art_values)
+                weighted_difference = line.importance_values * (difference(line.base_image, total_darkness_values) - diff_values)
+                loss = np.sum(weighted_difference)/len(x_coords)
+            case "mean": 
+                weighted_difference = (total_darkness_values - line.base_image)*line.importance_values
+                loss = np.sum(weighted_difference)/len(x_coords)
+            case "SMSE": #signed mean squared error
+                weighted_difference = (total_darkness_values - line.base_image)*line.importance_values
+                signed_squared_difference = np.sign(weighted_difference) * weighted_difference**2
+                loss = np.sum(signed_squared_difference)/len(x_coords)
+            case "SRMSE": #signed root mean squared error THIS GIVES SAME RESULT AS MEAN ERROR AND IDK WHY
+                weighted_difference = (total_darkness_values - line.base_image)*line.importance_values
+                signed_squared_difference = np.sign(weighted_difference) * (weighted_difference**2)
+                mean_difference = np.sum(signed_squared_difference)/len(x_coords)
+                loss = np.sqrt(abs(mean_difference))*np.sign(mean_difference)
+            case "median":
+                weighted_difference = (total_darkness_values - line.base_image)*line.importance_values
+                loss = np.median(weighted_difference)
         return loss
-    
-    if faster_dtype:
-        string_art_img.img = string_art_img.img.astype(np.float16)
 
     previous_anchor_idx = first_anchor
     for iter in tqdm(range(iterations)):
-        best_anchors, best_loss = find_best_line(previous_anchor_idx=previous_anchor_idx)
+        best_anchors, best_loss, best_start_anchor, best_end_anchor = find_best_line(previous_anchor_idx=previous_anchor_idx)
 
         #Load the best line and add it to the string art image
         best_string_pixels, best_string_darkness_values = line_pixel_dict[best_anchors], line_darkness_dict[best_anchors]
@@ -328,8 +348,8 @@ def create_string_art(first_anchor: int, base_img: np.ndarray, string_art_img: S
         else:
             new_values = string_art_img.img[x_coords, y_coords] + best_string_darkness_values
             string_art_img.img[x_coords, y_coords] = new_values
-        previous_anchor_idx = best_anchors[0]
-        string_art_img.string_path.append(best_anchors)
+        string_art_img.string_path.append((best_start_anchor, best_end_anchor))
+        previous_anchor_idx = best_end_anchor
         string_art_img.loss_list.append(best_loss)
 
         #Evaluate the string art
