@@ -16,26 +16,16 @@ AccelStepper stepper(1, stepPin, dirPin);
 const float stepsPerRevolution = 3200;
 
 const unsigned long actuatorRunDuration = 2000;
+unsigned long actuatorStartTime = 0;
 
-struct Anchors{
-  float startAnchor;
-  float endAnchor;
+enum State{
+  IDLE,
+  READING,
+  MOVING,
+  ACTUATING
 };
 
-Anchors currentAnchors;
-
-Anchors parseInstruction(String instruction){
-  Serial.println("Next line: " + instruction);
-
-  int commaIndex = instruction.indexOf(',');
-
-  // Extract instruction values
-  Anchors anchors;
-  anchors.startAnchor = instruction.substring(1, commaIndex).toFloat();
-  anchors.endAnchor = instruction.substring(commaIndex + 2).toFloat();
-
-  return anchors;
-}
+State currentState = IDLE;
 
 long radiansToSteps(float radians){
   return (long)(radians * (stepsPerRevolution / (2 * PI)));
@@ -43,24 +33,59 @@ long radiansToSteps(float radians){
 
 void raiseActuator(){
   Serial.println("Raising actuator");
-  digitalWrite(actuatorPin1, HIGH);
-  digitalWrite(actuatorPin2, LOW);
-  delay(actuatorRunDuration);
-  Serial.println("Done");
+  digitalWrite(actuatorPin1, LOW);
+  digitalWrite(actuatorPin2, HIGH);
+  actuatorStartTime = millis();
+  currentState = ACTUATING;
+
 }
 
 void lowerActuator(){
   Serial.println("Lowering actuator");
+  digitalWrite(actuatorPin1, HIGH);
+  digitalWrite(actuatorPin2, LOW);
+  actuatorStartTime = millis();
+  currentState = ACTUATING;
+}
+
+void stopActuator(){
   digitalWrite(actuatorPin1, LOW);
-  digitalWrite(actuatorPin2, HIGH);
-  delay(actuatorRunDuration);
+  digitalWrite(actuatorPin2, LOW);
 }
 
 void rotateToAnchor(float anchor){
   long anchorPos = radiansToSteps(anchor);
   Serial.println("Moving to: " + String(anchorPos));
   stepper.moveTo(anchorPos);
-  stepper.runToPosition();
+  currentState = MOVING;
+}
+
+String parseNextInstruction(){
+  Serial.print("Reading next line... ");
+  String line = myFile.readStringUntil(',');
+  Serial.println(line);
+  return line;
+}
+
+void executeInstruction(String instruction){
+  char command = instruction.charAt(0);
+
+  switch(command){
+      case 'R':
+        raiseActuator();
+        break;
+      case 'L':
+        lowerActuator();
+        break;
+      case 'M':
+        float anchor = instruction.substring(1).toFloat();
+        rotateToAnchor(anchor);
+        break;
+      default:
+        Serial.print("Unknown command: ");
+        Serial.println(command);
+        break;
+    }
 }
 
 void setup() {
@@ -70,8 +95,8 @@ void setup() {
   pinMode(actuatorPin1,OUTPUT);
   pinMode(actuatorPin2,OUTPUT);
 
-  stepper.setMaxSpeed(1000);
-  stepper.setAcceleration(250);
+  stepper.setMaxSpeed(4000);
+  stepper.setAcceleration(1000);
 
   Serial.begin(9600);
   while(!Serial){
@@ -92,31 +117,36 @@ void setup() {
   } else {
     Serial.println("Error opening file!");
   }
-
-  rotateToAnchor(0);
-  raiseActuator();
-
 }
 
 void loop() {
-  if(isFileOpen && myFile.available()){
-    Serial.print("Reading next line... ");
-    String line = myFile.readStringUntil(',');
-    Serial.println(line);
-    if(line == "R" || line == "L"){
-      Serial.println("test");
-    }
-    if(line == "R"){
-      raiseActuator();
-    }else if(line == "L"){
-      lowerActuator();
-    }else{
-      float anchor = line.toFloat();
-      rotateToAnchor(anchor);
-    }
-  }else if(isFileOpen){
-    myFile.close();
-    isFileOpen = false;
-    Serial.println("All instructions complete.");
+  stepper.run();
+  switch(currentState){
+    case IDLE:
+      if(isFileOpen && myFile.available()){
+        currentState = READING;
+      }
+      break;
+    case READING:
+      if(myFile.available()){
+        String instruction = parseNextInstruction();
+        executeInstruction(instruction);
+      }else{
+        myFile.close();
+        isFileOpen = false;
+        currentState = IDLE;
+        Serial.println("All instructions complete.");
+      }
+      break;
+    case MOVING:
+      if(stepper.distanceToGo() == 0){
+        currentState = IDLE;
+      }
+      break;
+    case ACTUATING:
+      if (millis() - actuatorStartTime >= actuatorRunDuration) {
+        stopActuator();
+        currentState = IDLE;
+      }
   }
 }

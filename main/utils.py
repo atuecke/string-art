@@ -16,6 +16,7 @@ import multiprocessing
 from itertools import product
 import random
 import scipy.stats as stats
+import cupy as cp
 
 class BaseImage():
     """
@@ -155,6 +156,14 @@ class StringLine():
         self.string_pixels = string_pixels
         self.string_darkness = string_darkness
 
+class CostMethods(Enum):
+    DIFFERENCE = 1
+    MEAN = 2
+    SMSE = 3
+    SMRSE = 4
+    MEDIAN = 5
+
+
 def make_line_dict(data_folder:str, string_art_img: StringArtImage, closest_neighbors: int = 10):
     """
     Makes a dictionary of every pixel and its darkness value for each line for every possible combination of anchors
@@ -194,7 +203,7 @@ def make_line_dict(data_folder:str, string_art_img: StringArtImage, closest_neig
         return forward_distance <= closest_neighbors or backward_distance <= closest_neighbors or idx1 == idx2
     
     #Create a new line darkness dict or load an existing on if it already exists
-    pkl_path = f"{data_folder}/line_dicts/{shape[0]}-{shape[1]}-{len(anchors)}.pkl"
+    pkl_path = f"{data_folder}/line_dicts/{shape[0]}x{shape[1]}-{len(anchors)}.pkl"
     if Path(pkl_path).exists():
         print("Opening existing line dictionary")
         with open(pkl_path, "rb") as file:
@@ -381,7 +390,18 @@ def load_string_art(data_dir: str):
 
     return string_art_img
     
+def save_instructions(string_path: str, path: str):
+    instructions_list = ["0", "L"]
+    for anchors in string_path:
+        instructions_list.append(str(anchors[0]))
+        instructions_list.append("R")
+        instructions_list.append(str(anchors[1]))
+        instructions_list.append("L")
+    
+    instructions_list = ",".join(instructions_list)
 
+    with open(path, "w") as file:
+        file.write(instructions_list)
 
 def draw_line(p0: tuple, p1: tuple, multiplier: float, mask: np.ndarray):
     """
