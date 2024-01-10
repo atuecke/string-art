@@ -119,7 +119,7 @@ Menu startMenu;
 void createStartMenu() {
   menuMode = MENU;                      // enable menu mode     
 
-  startMenu.noOfmenuItems = 2;
+  startMenu.noOfmenuItems = 9;
 
   startMenu.menuItems[1].name = "DIAL";
   startMenu.menuItems[1].type = DIAL;
@@ -128,6 +128,34 @@ void createStartMenu() {
   startMenu.menuItems[2].name = "BOOL";
   startMenu.menuItems[2].type = BOOL;
   startMenu.menuItems[2].data.boolData = {false};
+
+  startMenu.menuItems[3].name = "BOOL";
+  startMenu.menuItems[3].type = BOOL;
+  startMenu.menuItems[3].data.boolData = {false};
+
+  startMenu.menuItems[4].name = "BOOL";
+  startMenu.menuItems[4].type = BOOL;
+  startMenu.menuItems[4].data.boolData = {false};
+
+  startMenu.menuItems[5].name = "BOOL";
+  startMenu.menuItems[5].type = BOOL;
+  startMenu.menuItems[5].data.boolData = {false};
+
+  startMenu.menuItems[6].name = "BOOL";
+  startMenu.menuItems[6].type = BOOL;
+  startMenu.menuItems[6].data.boolData = {false};
+  
+  startMenu.menuItems[7].name = "BOOL";
+  startMenu.menuItems[7].type = BOOL;
+  startMenu.menuItems[7].data.boolData = {false};
+
+  startMenu.menuItems[8].name = "BOOL";
+  startMenu.menuItems[8].type = BOOL;
+  startMenu.menuItems[8].data.boolData = {false};
+
+  startMenu.menuItems[9].name = "BOOL";
+  startMenu.menuItems[9].type = BOOL;
+  startMenu.menuItems[9].data.boolData = {false};
 }
 
 Menu allMenus[1];
@@ -253,6 +281,8 @@ void menuUpdate(Menu& menu) {
     }
 }
 
+
+
 // ----------------------------------------------------------------
 //                       -service active menu
 // ----------------------------------------------------------------
@@ -279,21 +309,9 @@ void serviceMenu(Menu& menu) {
       if (menu.highlightedMenuItem > menu.noOfmenuItems) menu.highlightedMenuItem = menu.noOfmenuItems;
       if (menu.highlightedMenuItem < 1) menu.highlightedMenuItem = 1;
 
-    // title
-      display.setCursor(0, 0);
-      if (menuLargeText) {
-        display.setTextSize(2);
-        display.println(menu.menuItems[menu.highlightedMenuItem].name.substring(0, MaxmenuTitleLength));
-      } else {
-        if (menu.title.length() > MaxmenuTitleLength) display.setTextSize(1);
-        else display.setTextSize(2);
-        display.println(menu.title);
-      }
-      display.drawLine(0, topLine-1, display.width(), topLine-1, WHITE);       // draw horizontal line under title
-
     // menu
-      display.setTextSize(1);
-      display.setCursor(0, topLine);
+      display.setTextSize(2);
+      display.setCursor(0, lineSpace1);
       for (int i=1; i <= displayMaxLines; i++) {
         int item = menu.highlightedMenuItem - _centreLine + i;
         if (item == menu.highlightedMenuItem) display.setTextColor(BLACK, WHITE);
