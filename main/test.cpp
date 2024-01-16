@@ -32,10 +32,13 @@
       const int maxmenuItems = 12;              // max number of items used in any of the menus (keep as low as possible to save memory)
       const int itemTrigger = 2;                // rotary encoder - counts per tick (varies between encoders usually 1 or 2)
       const int topLine = 18;                   // y position of lower area of the display (18 with two colour displays)
-      const byte lineSpace1 = 9;                // line spacing for textsize 1 (small text)
+      const byte lineSpace1 = 0;                // line spacing for textsize 1 (small text)
       const byte lineSpace2 = 17;               // line spacing for textsize 2 (large text)
       const int displayMaxLines = 5;            // max lines that can be displayed in lower section of display in textsize1 (5 on larger oLeds)
       const int MaxmenuTitleLength = 10;        // max characters per line when using text size 2 (usually 10)
+      const int maxLineLength = 10;
+      const int totalNumMenus = 2;
+      uint32_t lastMenuActivity = 0;            // time the menu last saw any activity (used for timeout)
 
 
 // -------------------------------------------------------------------------------------------------
@@ -44,29 +47,33 @@
 
 enum MenuItemType{
     DIAL,
-    BOOL
+    BOOL,
+    SWITCH_MENU
 };
 
 struct DialMenuItem {
-    int max_value;
-    int min_malue;
-    int step;
-    int value;
+  String name;
+  int max_value;
+  int min_malue;
+  int step;
+  int value;
 };
 
 struct BoolMenuItem {
-    bool value;
+  String name[2];
+  bool value;
 };
 
-union MenuItemData {
-    DialMenuItem dialData;
-    BoolMenuItem boolData;
+struct SwitchMenuItem {
+  String name;
+  int menuIdx;
 };
 
 struct MenuItem {
-    String name;
     MenuItemType type;
-    MenuItemData data;
+    DialMenuItem dialData;
+    BoolMenuItem boolData;
+    SwitchMenuItem switchData;
 };
  
 // -------------------------------------------------------------------------------------------------
@@ -87,7 +94,6 @@ enum menuModes {
     int noOfmenuItems = 0;                    // number if menu items in the active menu
     int highlightedMenuItem = 0;              // which item is curently highlighted in the menu
     MenuItem menuItems[maxmenuItems+1];         // store for the menu item titles
-    uint32_t lastMenuActivity = 0;            // time the menu last saw any activity (used for timeout)
   };
 
   struct rotaryEncoders {
@@ -119,47 +125,47 @@ Menu startMenu;
 void createStartMenu() {
   menuMode = MENU;                      // enable menu mode     
 
-  startMenu.noOfmenuItems = 9;
+  startMenu.noOfmenuItems = 4;
 
-  startMenu.menuItems[1].name = "DIAL";
   startMenu.menuItems[1].type = DIAL;
-  startMenu.menuItems[1].data.dialData = {50, 0, 1, 20};
+  startMenu.menuItems[1].dialData = {"DIAL", 50, 0, 1, 20};
 
-  startMenu.menuItems[2].name = "BOOL";
   startMenu.menuItems[2].type = BOOL;
-  startMenu.menuItems[2].data.boolData = {false};
+  startMenu.menuItems[2].boolData = {{"Pause", "Unpause"}, false};
 
-  startMenu.menuItems[3].name = "BOOL";
-  startMenu.menuItems[3].type = BOOL;
-  startMenu.menuItems[3].data.boolData = {false};
+  startMenu.menuItems[3].type = DIAL;
+  startMenu.menuItems[3].dialData = {"DIAL2", 150, 0, 5, 120};
 
-  startMenu.menuItems[4].name = "BOOL";
-  startMenu.menuItems[4].type = BOOL;
-  startMenu.menuItems[4].data.boolData = {false};
-
-  startMenu.menuItems[5].name = "BOOL";
-  startMenu.menuItems[5].type = BOOL;
-  startMenu.menuItems[5].data.boolData = {false};
-
-  startMenu.menuItems[6].name = "BOOL";
-  startMenu.menuItems[6].type = BOOL;
-  startMenu.menuItems[6].data.boolData = {false};
-  
-  startMenu.menuItems[7].name = "BOOL";
-  startMenu.menuItems[7].type = BOOL;
-  startMenu.menuItems[7].data.boolData = {false};
-
-  startMenu.menuItems[8].name = "BOOL";
-  startMenu.menuItems[8].type = BOOL;
-  startMenu.menuItems[8].data.boolData = {false};
-
-  startMenu.menuItems[9].name = "BOOL";
-  startMenu.menuItems[9].type = BOOL;
-  startMenu.menuItems[9].data.boolData = {false};
+  startMenu.menuItems[4].type=SWITCH_MENU;
+  startMenu.menuItems[4].switchData.name = "Menu2";
+  startMenu.menuItems[4].switchData.menuIdx = 1;
 }
 
-Menu allMenus[1];
-int currentMenu = 1;
+Menu runningMenu;
+void createRunningMenu(){
+  menuMode = MENU;                      // enable menu mode     
+
+  runningMenu.noOfmenuItems = 5;
+
+  runningMenu.menuItems[1].type = DIAL;
+  runningMenu.menuItems[1].dialData = {"test", 50, 0, 1, 20};
+
+  runningMenu.menuItems[2].type = BOOL;
+  runningMenu.menuItems[2].boolData = {{"Pause", "Unpause"}, true};
+
+  runningMenu.menuItems[3].type = DIAL;
+  runningMenu.menuItems[3].dialData = {"also", 150, 0, 5, 120};
+
+  runningMenu.menuItems[4].type = BOOL;
+  runningMenu.menuItems[4].boolData = {{"OFF", "ON"}, false};
+
+  runningMenu.menuItems[5].type = SWITCH_MENU;
+  runningMenu.menuItems[5].switchData.name = "Menu1";
+  runningMenu.menuItems[5].switchData.menuIdx = 0;
+}
+
+Menu allMenus[totalNumMenus];
+int currentMenu = 0;
 
 void setup() {
 
@@ -196,7 +202,9 @@ void setup() {
     displayMessage("STARTED", "BasicWebserver\nsketch");
 
     createStartMenu();
-    Menu allMenus[1] = {startMenu};
+    createRunningMenu();
+    allMenus[0] = startMenu;
+    allMenus[1] = runningMenu;
 }
 
 void loop() {
@@ -238,6 +246,10 @@ void reUpdateButton() {
       }
     }
     rotaryEncoder.encoderPrevButton = tReading;            // update last state read
+
+    if(menuMode == OFF){
+      menuMode = MENU;
+    }
 }
 
 
@@ -250,8 +262,10 @@ void menuUpdate(Menu& menu) {
     if (menuMode == OFF) return;    // if menu system is turned off do nothing more
 
     // if no recent activity then turn oled off
-    if ( (unsigned long)(millis() - menu.lastMenuActivity) > (menuTimeout * 1000) ) {
+    if ( (unsigned long)(millis() - lastMenuActivity) > (menuTimeout * 1000) ) {
         menuMode = OFF;
+        display.clearDisplay();
+        display.display();
       return;
     }
 
@@ -287,18 +301,47 @@ void menuUpdate(Menu& menu) {
 //                       -service active menu
 // ----------------------------------------------------------------
 
+String reGetItemName(MenuItem& menuItem){
+  switch(menuItem.type){
+    case DIAL: {
+      String name = menuItem.dialData.name;
+      int space_len = maxLineLength-name.length()-String(menuItem.dialData.value).length();
+      if(space_len <= 0) name.concat(" ");
+      else{
+        for(int i = 0; i < space_len; i++){
+          name.concat(" ");
+        }
+      }
+      name.concat(String(menuItem.dialData.value));
+      return name;
+    }
+    case BOOL: {
+      if (menuItem.boolData.value < 0 || menuItem.boolData.value >= 2) {
+        Serial.println("BOOL index out of bounds!");
+        return "Error";
+      }
+      return menuItem.boolData.name[menuItem.boolData.value];
+    }
+    case SWITCH_MENU: {
+      return menuItem.switchData.name;
+    }
+    default:
+      return "Invalid";
+  }
+}
+
 void serviceMenu(Menu& menu) {
 
     // rotary encoder
       if (rotaryEncoder.encoder0Pos >= itemTrigger) {
         rotaryEncoder.encoder0Pos -= itemTrigger;
         menu.highlightedMenuItem++;
-        menu.lastMenuActivity = millis();   // log time
+        lastMenuActivity = millis();   // log time
       }
       if (rotaryEncoder.encoder0Pos <= -itemTrigger) {
         rotaryEncoder.encoder0Pos += itemTrigger;
         menu.highlightedMenuItem--;
-        menu.lastMenuActivity = millis();   // log time
+        lastMenuActivity = millis();   // log time
       }
 
     const int _centreLine = displayMaxLines / 2 + 1;    // mid list point
@@ -316,7 +359,9 @@ void serviceMenu(Menu& menu) {
         int item = menu.highlightedMenuItem - _centreLine + i;
         if (item == menu.highlightedMenuItem) display.setTextColor(BLACK, WHITE);
         else display.setTextColor(WHITE);
-        if (item > 0 && item <= menu.noOfmenuItems) display.println(menu.menuItems[item].name);
+        if (item > 0 && item <= menu.noOfmenuItems){
+          display.println(reGetItemName(menu.menuItems[item]));
+        }
         else display.println(" ");
       }
 
@@ -339,11 +384,11 @@ int serviceValue(bool _blocking, Menu& menu) {
 
   if (_blocking) {
     menuMode = BLOCKING;
-    menu.lastMenuActivity = millis();   // log time of last activity (for timeout)
+    lastMenuActivity = millis();   // log time of last activity (for timeout)
   }
   uint32_t tTime;
 
-  DialMenuItem& dialData = menu.menuItems[menu.highlightedMenuItem].data.dialData;
+  DialMenuItem& dialData = menu.menuItems[menu.highlightedMenuItem].dialData;
 
   do {
 
@@ -351,20 +396,20 @@ int serviceValue(bool _blocking, Menu& menu) {
       if (rotaryEncoder.encoder0Pos >= itemTrigger) {
         rotaryEncoder.encoder0Pos -= itemTrigger;
         dialData.value -= dialData.step;
-        menu.lastMenuActivity = millis();   // log time
+        lastMenuActivity = millis();   // log time
       }
       if (rotaryEncoder.encoder0Pos <= -itemTrigger) {
         rotaryEncoder.encoder0Pos += itemTrigger;
         dialData.value += dialData.step;
-        menu.lastMenuActivity = millis();   // log time
+        lastMenuActivity = millis();   // log time
       }
       if (dialData.value < dialData.min_malue) {
         dialData.value = dialData.min_malue;
-        menu.lastMenuActivity = millis();   // log time
+        lastMenuActivity = millis();   // log time
       }
       if (dialData.value > dialData.max_value) {
         dialData.value = dialData.max_value;
-        menu.lastMenuActivity = millis();   // log time
+        lastMenuActivity = millis();   // log time
       }
 
       display.clearDisplay();
@@ -372,9 +417,9 @@ int serviceValue(bool _blocking, Menu& menu) {
 
       // title
         display.setCursor(0, 0);
-        if (menu.menuItems[menu.highlightedMenuItem].name.length() > MaxmenuTitleLength) display.setTextSize(1);
+        if (menu.menuItems[menu.highlightedMenuItem].dialData.name.length() > MaxmenuTitleLength) display.setTextSize(1);
         else display.setTextSize(2);
-        display.println(menu.menuItems[menu.highlightedMenuItem].name);
+        display.println(menu.menuItems[menu.highlightedMenuItem].dialData.name);
         display.drawLine(0, topLine-1, display.width(), topLine-1, WHITE);       // draw horizontal line under title
 
       // value selected
@@ -390,11 +435,14 @@ int serviceValue(bool _blocking, Menu& menu) {
       // bar
         int Tlinelength = map(dialData.value, dialData.min_malue, dialData.max_value, 0 , display.width());
         display.drawLine(0, display.height()-1, Tlinelength, display.height()-1, WHITE);
+        display.drawLine(0, display.height()-2, Tlinelength, display.height()-2, WHITE);
+        display.drawLine(0, display.height()-3, Tlinelength, display.height()-3, WHITE);
+        display.drawLine(0, display.height()-4, Tlinelength, display.height()-4, WHITE);
 
       display.display();
 
       reUpdateButton();        // check status of button
-      tTime = (unsigned long)(millis() - menu.lastMenuActivity);      // time since last activity
+      tTime = (unsigned long)(millis() - lastMenuActivity);      // time since last activity
 
   } while (_blocking && rotaryEncoder.reButtonPressed == 0 && tTime < (menuTimeout * 1000));        // if in blocking mode repeat until button is pressed or timeout
 
@@ -409,11 +457,9 @@ int serviceValue(bool _blocking, Menu& menu) {
 //                         -message display
 // ----------------------------------------------------------------
 // 21 characters per line, use "\n" for next line
-// assistant:  <     line 1        ><     line 2        ><     line 3        ><     line 4         >
 
  void displayMessage(String _title, String _message) {
     display.clearDisplay();
-    display.display();
     menuMode = MESSAGE;
 
     display.clearDisplay();
@@ -440,6 +486,7 @@ int serviceValue(bool _blocking, Menu& menu) {
  }
 
 void doEncoder() {
+  lastMenuActivity = millis();
 
   bool pinA = digitalRead(encoder0PinA);
   bool pinB = digitalRead(encoder0PinB);
@@ -467,15 +514,22 @@ void doEncoder() {
 }
 
 void selectItem(Menu& menu) {
-    menu.lastMenuActivity = millis();
-    if (serialDebug) Serial.println("' item '" + menu.menuItems[menu.highlightedMenuItem].name + "' selected");
-    MenuItem selectedMenuItem = menu.menuItems[menu.highlightedMenuItem];
+    lastMenuActivity = millis();
+    //if (serialDebug) Serial.println("' item '" + menu.menuItems[menu.highlightedMenuItem].name + "' selected");
+    MenuItem& selectedMenuItem = menu.menuItems[menu.highlightedMenuItem];
     switch(selectedMenuItem.type) {
         case DIAL:
-            menuMode = VALUE;
-            break;
+          menuMode = VALUE;
+          break;
         case BOOL:
-            break;
+          selectedMenuItem.boolData.value = !selectedMenuItem.boolData.value;
+          break;
+        case SWITCH_MENU: {
+          currentMenu = selectedMenuItem.switchData.menuIdx;
+          display.clearDisplay();
+          menu.highlightedMenuItem = 0;
+          break;
+        }
     }
     rotaryEncoder.reButtonPressed = 0;
 }

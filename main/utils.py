@@ -132,13 +132,13 @@ class ImportanceMap():
         self.img = cv2.GaussianBlur(self.img, (blur_size, blur_size), 0)
         self.blur = blur_size
 
-    def apply_dynamic_sigmoid(self, max=1):
+    def apply_dynamic_sigmoid(self, exponent=1, std_exponent=1):
         """
         Applies a dynamic sigmoid function to the importance map, normalizing the map.
         """
         sigma = np.std(self.img)
         if sigma == 0: sigma = 1
-        transformed = max / (1 + np.exp(-self.img/sigma))
+        transformed = 1 / (1 + np.exp(-self.img/(sigma**std_exponent)))**exponent
         self.img = transformed
 
 class StringLine():
@@ -645,6 +645,11 @@ def outline_importance_map(importance_map: ImportanceMap, edge_thickness = 3):
     edges = detect_edges_color(img_array=importance_map.img, gaussian_blur_size=1, dilate_iterations=edge_thickness)
     edge_importance_map = ImportanceMap(img=edges)
     return edge_importance_map
+
+def background_importance_map(importance_map: ImportanceMap, cutoff: 0):
+    img = np.where(importance_map.img <= cutoff, 1, 0)
+    background_map = ImportanceMap(img=img)
+    return background_map
 
 def combine_importance_maps(all_maps: list):
     shape = all_maps[0].img.shape
