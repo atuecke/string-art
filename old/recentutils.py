@@ -16,7 +16,6 @@ import multiprocessing
 from itertools import product
 import random
 import scipy.stats as stats
-import cupy as cp
 
 class BaseImage():
     """
