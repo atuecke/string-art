@@ -30,3 +30,4 @@ class StringArtImage():
         self.line_darkness = line_darkness
         self.mask = mask
         self.loss_list = []
+        self.best_anchors_list = []

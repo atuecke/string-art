@@ -1,4 +1,5 @@
 import numpy as np
+import cupy as cp
 
 class StringLine():
     def __init__(
@@ -14,6 +15,39 @@ class StringLine():
         self.importance_values = importance_values
         self.string_pixels = string_pixels
         self.string_darkness = string_darkness
+
+class GpuStringLine():
+    def __init__(
+            self,
+            string_darkness: cp.ndarray,
+            string_pixels: cp.ndarray,
+            line_slice: slice
+    ) -> None:
+        self.string_pixels = string_pixels
+        self.string_darkness = string_darkness
+        self.line_slice = line_slice
+        self.string_pixel_map = []
+
+class FlatGpuStringLines():
+    def __init__(
+            self,
+            base_image: cp.ndarray,
+            importance_values: cp.ndarray,
+            string_pixels: cp.ndarray,
+            string_darkness: cp.ndarray,
+            string_art_values: cp.ndarray,
+            pixelwise_cost: cp.ndarray,
+            slices: list= []
+    ) -> None:
+        """
+        """
+        self.base_image = base_image
+        self.importance_values = importance_values
+        self.string_pixels = string_pixels
+        self.string_darkness = string_darkness
+        self.string_art_values = string_art_values
+        self.pixelwise_cost = pixelwise_cost
+        self.slices = slices
 
 
 def draw_line(p0: tuple, p1: tuple, multiplier: float, mask: np.ndarray):

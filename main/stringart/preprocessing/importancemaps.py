@@ -156,3 +156,15 @@ def detect_edges_color(img_array, low_threshold=50, high_threshold=150, gaussian
     normalized_edges = edges_combined / 255.0
 
     return normalized_edges
+
+
+def below_threshold(img: np.ndarray, threshold: float):
+    map = np.where(img <= threshold, 1, 0)
+    map = ImportanceMap(img=map)
+    return map
+
+
+def above_threshold(img: np.ndarray, threshold: float):
+    map = np.where(img >= threshold, 1, 0)
+    map = ImportanceMap(img=map)
+    return map

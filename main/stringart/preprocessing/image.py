@@ -90,7 +90,6 @@ def create_mask(img: np.ndarray):
 
     # Create the circular mask
     x, y = np.ogrid[-center[0]:width-center[0], -center[1]:height-center[1]]
-    print(x)
     mask = x*x + y*y <= radius*radius
 
     return mask
