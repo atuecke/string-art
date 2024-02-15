@@ -37,7 +37,7 @@ def create_string_art_cpu(first_anchor: int, base_img: BaseImage, string_art_img
     if not importance_map:
         importance_map = ImportanceMap(img=np.ones_like(base_img.img))
     
-    tqdm.write("Building line arrays")
+    #tqdm.write("Building line arrays")
     for idx, anchors in enumerate(line_pixel_dict.keys()):
         pixels = line_pixel_dict[anchors]
         x_coords = pixels[:, 0]
@@ -90,6 +90,7 @@ def create_string_art_cpu(first_anchor: int, base_img: BaseImage, string_art_img
     else:
         previous_anchor_idx = random.randint(0, len(anchors))
     for iter in tqdm(range(iterations), desc=f"Creating string art for {base_img.path}"):
+    #for iter in range(iterations):
         best_anchors, best_loss, best_start_anchor, best_end_anchor = find_best_line(previous_anchor_idx=previous_anchor_idx)
 
         #Load the best line and add it to the string art image

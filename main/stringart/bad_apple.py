@@ -5,6 +5,7 @@ from stringart.preprocessing.image import Anchor
 from tqdm import tqdm
 from pathlib import Path
 import pickle
+import re
 
 from stringart.core.stringimage import StringArtImage
 from stringart.algorithm.lines import draw_line
@@ -43,6 +44,23 @@ def save_frames(video_path, target_fps, output_folder):
     video.release()
     print(f"Extracted {extracted_count} frames to {output_folder}")
 
+def images_to_video(image_folder, output_video_file, fps):
+    # List and sort the images based on the frame number
+    images = [img for img in os.listdir(image_folder) if img.endswith(".jpg") or img.endswith(".png")]
+    images.sort(key=lambda x: int(re.findall("frame_(\d+)", x)[0]))
+
+    # Determine the width and height from the first image
+    frame = cv2.imread(os.path.join(image_folder, images[0]))
+    height, width, layers = frame.shape
+
+    # Define the codec and create VideoWriter object
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 'mp4v' or 'x264' might also work
+    video = cv2.VideoWriter(output_video_file, fourcc, fps, (width, height))
+
+    for image in images:
+        video.write(cv2.imread(os.path.join(image_folder, image)))
+
+    video.release()
 
 
 def create_anchors_rectangle(img: np.ndarray, num_anchors: int):
