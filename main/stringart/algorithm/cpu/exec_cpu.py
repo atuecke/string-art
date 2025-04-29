@@ -1,47 +1,78 @@
 import numpy as np
-from tqdm import tqdm
-from enum import Enum
-from skimage.metrics import structural_similarity as ssim
 import math
 import random
+from enum import Enum
+from typing import List, Tuple, Dict
+from collections import defaultdict
+
+from tqdm import tqdm
+from numba import njit
+from skimage.metrics import structural_similarity as ssim
 
 from stringart.core.stringimage import StringArtImage
 from stringart.preprocessing.importancemaps import ImportanceMap
 from stringart.algorithm.lines import StringLine
 from stringart.algorithm.costmethod import CostMethod
-from stringart.algorithm.cpu.eval import find_cost 
+from stringart.algorithm.cpu.eval import find_cost
 from stringart.preprocessing.image import BaseImage
 
-def create_string_art_cpu(first_anchor: int, base_img: BaseImage, string_art_img: StringArtImage, line_pixel_dict: dict, line_darkness_dict: dict, iterations: int, cost_method: CostMethod = CostMethod.MEAN, max_darkness: float = None, eval_interval: int = None, importance_map: ImportanceMap = None, use_prev_anchor: bool = True, random_neighbor = False):
+
+def create_string_art_cpu(
+    first_anchor: int,
+    base_img: BaseImage,
+    string_art_img: StringArtImage,
+    line_pixel_dict: dict,
+    line_darkness_dict: dict,
+    iterations: int,
+    cost_method: CostMethod = CostMethod.MEAN,
+    max_darkness: float = None,
+    eval_interval: int = None,
+    importance_map: ImportanceMap = None,
+    use_prev_anchor: bool = True,
+    random_neighbor: bool = False,
+    profiling: bool = False
+) -> StringArtImage:
     """
-    Creates the completed string art
+    Generate string art by iteratively selecting and adding optimal strings.
+
+    Steps:
+      1. Build internal data structures (lines, cost vector, pixel→line mapping).
+      2. On each iteration, choose the best next string based on current costs.
+      3. Update the canvas and all line costs incrementally.
+      4. Optionally evaluate similarity at intervals.
 
     Args:
-        first_anchor: The starting anchor
-        base_img: The origonal image, used for finding the best line
-        string_art_img: The string art image that is supposed to be made TODO: Create the string art image in in the function
-        line_pixel_dict: The ditionary of line pixels for each anchor combination
-        line_darkness_dict: The dictionary of line darkness values for each anchor combenation, cooresponds to line_pixel_dict
-        iterations: The number of strings drawn. Range vaires with anchor count and image size
-        loss_method: The method that the function uses to determine the loss of a line
-        max_darkness: The maximum darkness of a line in the string art image. If set to none, there is no limit
-        eval_interval: Evalutate the entire image on this interval, saved in the returned string_art_img
-        importance_map: The image map of importance values for each pixel
+        first_anchor: Index of the starting anchor.
+        base_img: Reference image used to compute cost improvements.
+        string_art_img: Canvas object storing the current string art state.
+        line_pixel_dict: Maps anchor-pair tuples to pixel coordinates arrays.
+        line_darkness_dict: Maps anchor-pair tuples to per-pixel darkness values.
+        iterations: Number of strings to add.
+        cost_method: Method to compute line cost (e.g. mean difference).
+        max_darkness: Clamp maximum darkness per pixel if specified.
+        eval_interval: Interval (in iterations) to compute global similarity.
+        importance_map: Per-pixel importance weighting; defaults to uniform.
+        use_prev_anchor: If True, next line starts from last end anchor.
+        random_neighbor: If True, randomly choose among two possible next anchors.
+        profiling: If True, use pure-Python update for profiling (slower).
 
     Returns:
-        string_art_img: The final string art image
-        difference_img: The difference image used in this creation
+        string_art_img: The final StringArtImage with all added strings.
     """
-    anchor_line_idx = {}
-    lines = []
+    #--- Prepare importance map and line objects ---
     if not importance_map:
+        print("Importance map not found, using uniform map.")
         importance_map = ImportanceMap(img=np.ones_like(base_img.img))
-    
-    #tqdm.write("Building line arrays")
-    for idx, anchors in enumerate(line_pixel_dict.keys()):
+
+    anchor_line_idx: Dict[Tuple[int,int], int] = {}
+    lines: List[StringLine] = []
+
+    # Build StringLine objects for each anchor-pair
+    for idx, anchors in tqdm(
+        enumerate(line_pixel_dict.keys()), desc="Building line arrays"
+    ):
         pixels = line_pixel_dict[anchors]
-        x_coords = pixels[:, 0]
-        y_coords = pixels[:, 1]
+        x_coords, y_coords = pixels[:, 0], pixels[:, 1]
 
         anchor_line_idx[anchors] = idx
         lines.append(StringLine(
@@ -50,99 +81,346 @@ def create_string_art_cpu(first_anchor: int, base_img: BaseImage, string_art_img
             string_pixels=pixels,
             string_darkness=line_darkness_dict[anchors]
         ))
-   
-    if not importance_map:
-        importance_map = np.ones(string_art_img.img.shape)
-    importance_map = importance_map.img
-                    
-    def find_best_line(previous_anchor_idx: int):
+
+    #--- Initialize core data structures ---
+    H, W = string_art_img.img.shape  # Canvas height and width
+    costs = init_line_costs(lines)
+
+    # Flatten line pixels and weights for CSR-style mapping
+    line_ptr_pix, line_pix = flatten_line_pixels(lines, W)
+    line_ptr_w,   line_wval = flatten_line_weights(lines)
+
+    # Map from each anchor to lines leaving it
+    anchor_to_lines = build_anchor_to_lines(anchor_line_idx)
+
+    # Build pixel -> (line, weight) mapping via JIT for speed
+    print("Building pixel-to-line mapping (CSR)…")
+    pixel_ptr, flat_line_ids, flat_weights = build_mapping_jit(
+        line_ptr_pix, line_pix,
+        line_wval, H, W
+    )
+
+    #--- Inner helper to choose the next best line ---
+    def find_best_line(prev_anchor: int) -> Tuple[Tuple[int,int], float, int, int]:
         """
-        Starts at a specified anchor and find the loss for every string leading to every other anchor, updating the best loss whenever a better one is found
+        Select the optimal next string based on current costs.
 
-        Args:
-            previous_anchor_idx: The previous anchor, which was the end anchor for the last line
-
-        Returns:
-            best_anchors: The tuple of the two best anchors
-            best_loss: The best line loss found
+        Returns best_anchors (sorted tuple), best_cost, start_anchor, end_anchor.
         """
-        best_loss = np.inf #TODO set this to the starting loss and make the algorithm terminate when there isn't a possible improvement
-        best_anchors = None
-        best_end_anchor = None
-        best_start_anchor = None
-        for start_anchor_idx in get_neighbors(string_art_img.anchors, previous_anchor_idx, random_neighbor=random_neighbor): #Finds the neighbors of the start anchor
-            for end_anchor_idx in range(len(string_art_img.anchors)):
-                both_anchors = tuple(sorted((start_anchor_idx, end_anchor_idx))) #Makes sure to get the right order for the indices, set in make_line_dict().
-                if both_anchors not in line_pixel_dict: continue
+        # Determine candidate start anchors (neighbors)
+        nbrs = get_neighbors(
+            string_art_img.anchors, prev_anchor, random_neighbor=random_neighbor
+        )
 
-                line_idx = anchor_line_idx[both_anchors]
-                temp_loss = find_cost(method=cost_method, line=lines[line_idx], string_art_img=string_art_img.img)
+        # Gather (line_idx, start, end) for each candidate line
+        candidates: List[Tuple[int,int,int]] = []
+        for start in nbrs:
+            for line_idx, end in anchor_to_lines[start]:
+                candidates.append((line_idx, start, end))
 
-                if(temp_loss < best_loss): #Updates best loss if temp loss is better
-                    best_loss = temp_loss
-                    best_anchors = both_anchors
-                    best_end_anchor = end_anchor_idx
-                    best_start_anchor = start_anchor_idx
-        return best_anchors, best_loss, best_start_anchor, best_end_anchor
+        if not candidates:
+            raise RuntimeError(f"No candidate lines from anchor {prev_anchor}")
 
-    if use_prev_anchor:
-        previous_anchor_idx = first_anchor
-    else:
-        previous_anchor_idx = random.randint(0, len(anchors))
-    for iter in tqdm(range(iterations), desc=f"Creating string art for {base_img.path}"):
-    #for iter in range(iterations):
-        best_anchors, best_loss, best_start_anchor, best_end_anchor = find_best_line(previous_anchor_idx=previous_anchor_idx)
+        # Find the candidate with minimum cost
+        line_idxs = np.array([c[0] for c in candidates], dtype=np.int32)
+        costs_subset = costs[line_idxs]
+        best_pos = int(np.argmin(costs_subset))
 
-        #Load the best line and add it to the string art image
-        best_string_pixels, best_string_darkness_values = line_pixel_dict[best_anchors], line_darkness_dict[best_anchors]
-        x_coords = best_string_pixels[:, 0]
-        y_coords = best_string_pixels[:, 1]
-        
-        
-        
-        
-        if max_darkness:
-            new_values = np.clip(string_art_img.img[x_coords, y_coords] + best_string_darkness_values, 0, max_darkness)
-            string_art_img.img[x_coords, y_coords] = new_values
-        else:
-            new_values = string_art_img.img[x_coords, y_coords] + best_string_darkness_values
-            string_art_img.img[x_coords, y_coords] = new_values
-        string_art_img.string_path.append((best_start_anchor, best_end_anchor))
-        previous_anchor_idx = best_end_anchor
-        string_art_img.loss_list.append(best_loss)
+        best_j, best_start, best_end = candidates[best_pos]
+        best_cost = float(costs[best_j])
+        best_anchors = tuple(sorted((best_start, best_end)))
+        return best_anchors, best_cost, best_start, best_end
+
+    #--- Begin iterative string placement ---
+    canvas_flat = string_art_img.img.reshape(-1)
+    previous_anchor_idx = (
+        first_anchor if use_prev_anchor else random.randint(0, len(string_art_img.anchors)-1)
+    )
+
+    for iteration in tqdm(
+        range(iterations), desc=f"Creating string art for {base_img.path}"
+    ):
+        # 1) Choose next string
+        best_anchors, best_cost, best_start, best_end = find_best_line(previous_anchor_idx)
+        best_j = anchor_line_idx[best_anchors]
+
+        # 2) Extract pixels & darkness values for chosen line
+        s_ptr, e_ptr = line_ptr_pix[best_j], line_ptr_pix[best_j+1]
+        pix_flat = line_pix[s_ptr:e_ptr]
+        darkness_vals = lines[best_j].string_darkness
+
+        # 3) Update canvas and compute per-pixel deltas
+        old_vals = canvas_flat[pix_flat]
+        temp = old_vals + darkness_vals
+        new_vals = np.clip(temp, 0, max_darkness) if max_darkness is not None else temp
+        delta_vals = new_vals - old_vals
+        canvas_flat[pix_flat] = new_vals
+
+        # 4) Incrementally update line costs
+        update_costs(
+            costs, pixel_ptr, flat_line_ids, flat_weights,
+            pix_flat, delta_vals, profiling=profiling
+        )
+
+        # 5) Record and advance anchor
+        string_art_img.string_path.append((best_start, best_end))
+        previous_anchor_idx = best_end
+        string_art_img.cost_list.append((best_cost, iteration))
         string_art_img.best_anchors_list.append(best_anchors)
 
-        
+        # 6) Optional full-image similarity check
+        if eval_interval and (iteration % eval_interval == 0):
+            sim = compare_images(string_art_img.img, base_img.img, method="ssim")
+            string_art_img.similarities.append((iteration, sim))
 
-        #Evaluate the string art
-        if eval_interval:
-            if iter%eval_interval == 0:
-                similarity = compare_images(string_art_img.img, base_img.img, method="ssim")
-                string_art_img.similarities.append((iter, similarity))
-        
     return string_art_img
 
-def get_neighbors(arr: list, idx, random_neighbor=False):
-    # Calculate indices for neighbors with wrapping
+
+#------------------------------------------------------------------------------
+# Helper routines
+#------------------------------------------------------------------------------
+
+def update_costs(
+    costs: np.ndarray,
+    pixel_ptr: np.ndarray,
+    flat_line_ids: np.ndarray,
+    flat_weights: np.ndarray,
+    pix: np.ndarray,
+    delta: np.ndarray,
+    profiling: bool
+):
+    """
+    Incrementally adjust costs array after adding a string.
+
+    If profiling, use pure-Python loops; otherwise call JIT-optimized.
+    """
+    if profiling:
+        # Python version for profiling (slower but traceable)
+        for p, d in zip(pix, delta):
+            for k in range(pixel_ptr[p], pixel_ptr[p+1]):
+                costs[flat_line_ids[k]] += d * flat_weights[k]
+    else:
+        update_costs_jit(
+            costs, pixel_ptr, flat_line_ids, flat_weights, pix, delta
+        )
+
+
+@njit
+def update_costs_jit(
+    costs: np.ndarray,
+    pixel_ptr: np.ndarray,
+    flat_line_ids: np.ndarray,
+    flat_weights: np.ndarray,
+    pix: np.ndarray,
+    delta: np.ndarray
+):
+    """
+    JIT-compiled inner loop for cost updates:
+      costs[j2] += delta[i] * weight[j2,i] for each pixel i on the new line.
+    """
+    for i in range(pix.shape[0]):
+        p = pix[i]
+        d = delta[i]
+        for k in range(pixel_ptr[p], pixel_ptr[p+1]):
+            costs[flat_line_ids[k]] += d * flat_weights[k]
+
+
+def init_line_costs(lines: List[StringLine]) -> np.ndarray:
+    """
+    Compute initial cost for each line on a blank canvas:
+      cost[j] = -mean(base_pixel * importance).
+    """
+    n = len(lines)
+    costs = np.empty(n, dtype=np.float64)
+    for j, line in tqdm(
+        enumerate(lines), desc="Building initial line costs"
+    ):
+        weighted_sum = np.sum(line.base_image * line.importance_values)
+        costs[j] = -weighted_sum / line.base_image.size
+    return costs
+
+
+@njit
+def build_mapping_jit(
+    line_ptr: np.ndarray,    # int32[L+1]
+    line_pix: np.ndarray,    # int32[E]
+    line_wval: np.ndarray,   # float32[E]
+    H: int,
+    W: int
+):
+    """
+    JIT-compose  pixel_ptr, flat_line_ids, flat_weights for fast updates.
+    Uses a two-pass CSR build (count+prefixsum, then fill).
+    """
+    P = H * W
+    E = line_pix.shape[0]
+
+    # 1) Count entries per pixel
+    counts = np.zeros(P, np.int32)
+    for k in range(E):
+        counts[line_pix[k]] += 1
+
+    # 2) Prefix-sum to build pixel_ptr
+    pixel_ptr = np.empty(P+1, np.int32)
+    pixel_ptr[0] = 0
+    for p in range(P):
+        pixel_ptr[p+1] = pixel_ptr[p] + counts[p]
+
+    # 3) Allocate destination arrays
+    flat_line_ids = np.empty(E, np.int32)
+    flat_weights = np.empty(E, np.float32)
+
+    # 4) Reset counts to use as write cursors
+    for p in range(P):
+        counts[p] = 0
+
+    # 5) Fill in the line indices & weights
+    L = line_ptr.shape[0] - 1
+    for j in range(L):
+        for k in range(line_ptr[j], line_ptr[j+1]):
+            p = line_pix[k]
+            dst = pixel_ptr[p] + counts[p]
+            flat_line_ids[dst] = j
+            flat_weights[dst] = line_wval[k]
+            counts[p] += 1
+
+    return pixel_ptr, flat_line_ids, flat_weights
+
+
+def flatten_line_weights(lines: List[StringLine]) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Flatten each line's per-pixel weight = importance / line_length.
+
+    Returns (line_ptr_w, wflat) similar to CSR pointers.
+    """
+    lengths = [ln.string_pixels.shape[0] for ln in lines]
+    L = len(lines)
+    line_ptr = np.zeros(L+1, dtype=np.int32)
+    total = sum(lengths)
+    wflat = np.empty(total, dtype=np.float32)
+
+    idx = 0
+    for j, ln in tqdm(enumerate(lines), desc="Flattening line weights"):
+        line_ptr[j] = idx
+        inv_len = 1.0 / ln.string_pixels.shape[0]
+        wflat[idx:idx+lengths[j]] = ln.importance_values * inv_len
+        idx += lengths[j]
+    line_ptr[L] = idx
+    return line_ptr, wflat
+
+
+def build_pixel_line_mapping(
+    lines: List[StringLine],
+    canvas_shape: Tuple[int, int]
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Original dict-based pixel→(line, weight) mapping (fallback / legacy).
+    """
+    H, W = canvas_shape
+    P = H * W
+
+    pixel_to_lines = defaultdict(list)
+    for j, line in tqdm(
+        enumerate(lines), desc="Building temporary lines"
+    ):
+        coords = line.string_pixels  # (Lj,2)
+        imp_vals = line.importance_values
+        Lj = coords.shape[0]
+        w_scale = 1.0 / Lj
+        for (x, y), imp in zip(coords, imp_vals):
+            p = x * W + y
+            w = imp * w_scale
+            pixel_to_lines[p].append((j, w))
+
+    E = sum(len(v) for v in pixel_to_lines.values())
+    pixel_ptr = np.zeros(P+1, dtype=np.int32)
+    flat_line_ids = np.empty(E, dtype=np.int32)
+    flat_weights  = np.empty(E, dtype=np.float32)
+
+    idx = 0
+    for p in tqdm(range(P), desc="Flattening line dict into arrays"):
+        pixel_ptr[p] = idx
+        for (j, w) in pixel_to_lines.get(p, []):
+            flat_line_ids[idx] = j
+            flat_weights[idx]  = w
+            idx += 1
+    pixel_ptr[P] = idx
+    return pixel_ptr, flat_line_ids, flat_weights
+
+
+def build_anchor_to_lines(
+    anchor_line_idx: Dict[Tuple[int,int], int]
+) -> Dict[int, List[Tuple[int,int]]]:
+    """
+    Invert anchor-pair→line_idx mapping to anchor→list of lines.
+    """
+    d: Dict[int, List[Tuple[int,int]]] = defaultdict(list)
+    for (a, b), j in tqdm(anchor_line_idx.items(), desc="Mapping anchors to lines"):
+        d[a].append((j, b))
+        d[b].append((j, a))
+    return d
+
+
+def flatten_line_pixels(
+    lines: List[StringLine],
+    canvas_width: int
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Flatten each line's pixel coordinates into CSR arrays:
+      line_ptr_pix and line_pix.
+    """
+    L = len(lines)
+    lengths = [ln.string_pixels.shape[0] for ln in lines]
+    total = sum(lengths)
+
+    line_ptr = np.zeros(L+1, dtype=np.int32)
+    line_pix = np.empty(total, dtype=np.int32)
+
+    idx = 0
+    for j, ln in tqdm(
+        enumerate(lines), desc="Flattening line pixels"
+    ):
+        line_ptr[j] = idx
+        xs = ln.string_pixels[:, 0]
+        ys = ln.string_pixels[:, 1]
+        flat = xs * canvas_width + ys
+        line_pix[idx:idx+lengths[j]] = flat
+        idx += lengths[j]
+    line_ptr[L] = idx
+    return line_ptr, line_pix
+
+
+def get_neighbors(
+    arr: list,
+    idx: int,
+    random_neighbor: bool=False
+) -> List[int]:
+    """
+    Return the previous and next indices in a circular arrangement.
+    If random_neighbor, returns a single random neighbor.
+    """
     left_idx = (idx - 1) % len(arr)
     right_idx = (idx + 1) % len(arr)
     if random_neighbor:
-        indices = [left_idx, right_idx]
-        return [indices[random.randint(0, 1)]]
-    return left_idx, right_idx
+        return [random.choice([left_idx, right_idx])]
+    return [left_idx, right_idx]
 
-def compare_images(input_img, target_img, method):
+
+def compare_images(
+    input_img: np.ndarray,
+    target_img: np.ndarray,
+    method: str
+) -> float:
     """
+    Compute similarity between two images.
+    Supports 'ssim' and 'psnr'.
     """
     if method == "ssim":
-        similarity = ssim(input_img, target_img, data_range=1)
+        return ssim(input_img, target_img, data_range=1)
     elif method == "psnr":
         mse = np.mean((input_img - target_img) ** 2)
         if mse == 0:
-            similarity = float('inf')
-        max_pixel = 255.0
-        psnr = 20 * math.log10(max_pixel / math.sqrt(mse))
-        similarity = psnr
-
-    
-    return similarity
+            return float('inf')
+        return 20 * math.log10(255.0 / math.sqrt(mse))
+    else:
+        raise ValueError(f"Unknown comparison method: {method}")

@@ -13,10 +13,10 @@ from stringart.algorithm.costmethod import CostMethod
 from stringart.utils.io import save_image
 from stringart.bad_apple import create_anchors_rectangle, make_line_dict_rectangle
 
-PATH_TO_FRAMES = "./data/csgo/frames"
-CONFIG_PATH = "./data/csgo/config.json"
+INPUT_FRAMES = "./data/case/frames"
+OUTPUT_FRAMES = "./outputs/case/frames"
 NUM_ANCHORS = 400
-NUM_LINES = 5000
+NUM_LINES = 3000
 
 def run_range(folder_path: str, start: int, end: int):
 
@@ -31,14 +31,14 @@ def run_range(folder_path: str, start: int, end: int):
     init_string_art_img = StringArtImage(base_image=init_base_img, anchors=anchors, line_darkness=0.2, mask=mask)
 
     line_pixel_dict, line_darkness_dict = make_line_dict_rectangle(
-        data_folder="./data/csgo/",
+        data_folder="./data/case/",
         string_art_img=init_string_art_img
     )
 
     for idx in tqdm(range(start, end+1), desc=f"Creating frames"):
-        img_path = f"{PATH_TO_FRAMES}/frame_{idx}.jpg"
+        img_path = f"{INPUT_FRAMES}/frame_{idx}.jpg"
         string_frame = create_frame(img_path=img_path, mask=mask, anchors=anchors, line_pixel_dict=line_pixel_dict, line_darkness_dict=line_darkness_dict)
-        save_image(image=string_frame.img, directory="./outputs/csgo/frames", name=f"frame_{idx}.jpg")
+        save_image(image=string_frame.img, directory=OUTPUT_FRAMES, name=f"frame_{idx}.jpg")
 
 
 def create_frame(img_path:str, mask: np.ndarray, anchors: list, line_pixel_dict: dict, line_darkness_dict: dict):
@@ -74,4 +74,4 @@ def create_parser():
 
 
 if __name__ == "__main__":
-    run_range(folder_path=PATH_TO_FRAMES, start=0, end=3)
+    run_range(folder_path=INPUT_FRAMES, start=0, end=3)

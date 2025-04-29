@@ -29,5 +29,5 @@ class StringArtImage():
         self.similarities = []
         self.line_darkness = line_darkness
         self.mask = mask
-        self.cost_list = []
+        self.loss_list = []
         self.best_anchors_list = []
