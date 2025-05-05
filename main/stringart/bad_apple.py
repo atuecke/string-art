@@ -7,8 +7,8 @@ from pathlib import Path
 import pickle
 import re
 
-from stringart.core.stringimage import StringArtImage
-from stringart.algorithm.lines import draw_line
+from stringart.core.stringimage import StringImage
+from main.stringart.core.lines import draw_line
 
 def save_frames(video_path, target_fps, output_folder, width=None, height=None):
     # Make sure the output folder exists
@@ -101,7 +101,7 @@ def create_anchors_rectangle(img: np.ndarray, num_anchors: int):
     return anchors
 
 
-def make_line_dict_rectangle(data_folder:str, string_art_img: StringArtImage):
+def make_line_dict_rectangle(data_folder:str, string_art_img: StringImage):
     """
     Makes a dictionary of every pixel and its darkness value for each line for every possible combination of anchors
 

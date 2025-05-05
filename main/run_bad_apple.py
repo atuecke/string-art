@@ -7,7 +7,7 @@ import argparse
 
 from stringart.preprocessing.image import BaseImage, apply_mask
 from stringart.preprocessing.importancemaps import outline_importance_map, combine_importance_maps, background_importance_map, below_threshold, above_threshold
-from stringart.core.stringimage import StringArtImage
+from stringart.core.stringimage import StringImage
 from stringart.algorithm.execute import create_string_art
 from stringart.algorithm.costmethod import CostMethod
 from stringart.utils.io import save_image
@@ -35,7 +35,7 @@ def run_range(folder_path: str, config_path: str, start: int, end: int):
     init_base_img = BaseImage(path=f"{folder_path}/frame_{start}.jpg")
     mask = np.ones_like(init_base_img.img)
     anchors = create_anchors_rectangle(img=init_base_img.img, num_anchors=NUM_ANCHORS)
-    init_string_art_img = StringArtImage(base_image=init_base_img, anchors=anchors, line_darkness=0.2, mask=mask)
+    init_string_art_img = StringImage(base_image=init_base_img, anchors=anchors, line_darkness=0.2, mask=mask)
 
     line_pixel_dict, line_darkness_dict = make_line_dict_rectangle(
         data_folder="./data/bad_apple/",
@@ -78,7 +78,7 @@ def create_frame(img_path:str, focus_color: str, mask: np.ndarray, anchors: list
 
     base_img.img = np.clip(base_img.img + 0.2, 0, 1)
 
-    string_art_img = StringArtImage(base_image=base_img, anchors=anchors, line_darkness=0.2, mask=mask)
+    string_art_img = StringImage(base_image=base_img, anchors=anchors, line_darkness=0.2, mask=mask)
 
     string_frame = create_string_art(
         first_anchor= random.randint(0, NUM_ANCHORS-1),

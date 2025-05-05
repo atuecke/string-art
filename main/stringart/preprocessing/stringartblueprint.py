@@ -2,41 +2,64 @@ import numpy as np
 from PIL import Image
 import cv2
 
-class BaseImage():
-    """
-    The origonal image to create the string art off of
+from stringart.preprocessing.image import BaseImage
+from typing import overload
 
-    Attributes:
-        path: The path to the origonal image
-        color_img: The resized and copped image
-        img: The reseized, greyscaled, and cropped image
+class StringArtBlueprint():
+    """
     """
     def __init__(
             self,
-            path: str = None,
+            anchors: list = None,
+            line_darkness: float = None,
+            img_path: str = None,
+            resize_to: int = None,
             img: np.ndarray = None,
-            resize_to: int = None
+            color_img: np.ndarray = None,
+            mask: np.ndarray = None
     ) -> None:
-        """
-        Args:
-            path: The path to the image
-            img: If an image is already loaded, you can diretly set the image instead of path
-            resize_to: Resize the image to scale of (x,x)
-        """
-        if(path):
-            img = np.array(Image.open(path))
-            # Transpose only the first two dimensions to switch x and y coordinates
-            img = img.transpose(1, 0, 2)
-        
+       self.anchors = anchors
+       self.line_darkness = line_darkness
+       self.img_path = img_path
+       self.resize_to = resize_to
+       self.img = img
+       self.color_img = color_img
+       self.mask = mask
+       
+
+    @classmethod
+    def from_file(
+            cls,
+            img_path: str,
+            resize_to: int,
+            anchors: list,
+            line_darkness: float = 0.2,
+    ):
+        img = np.array(Image.open(img_path))
+        # Transpose only the first two dimensions to switch x and y coordinates
+        img = img.transpose(1, 0, 2)
+
         if(resize_to):
             img = resize_img(img=img, radius=resize_to)
 
-        self.color_img = img
+        color_img = img
 
         img = make_greyscale(img=img)
 
-        self.img = img
-        self.path = path
+        mask = create_mask(img_size=resize_to)
+
+
+        return cls(anchors=anchors, line_darkness=line_darkness, img_path=img_path, resize_to=resize_to, img=img, color_img=color_img, mask=mask)
+    
+#     def __getstate__(self):
+#         state = self.__dict__.copy()
+#         return state
+    
+#     def __setstate__(self, state):
+#         self.__dict__.update(state)
+    
+
+
 
 class Anchor():
     """

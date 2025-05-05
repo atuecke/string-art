@@ -2,10 +2,10 @@ from tqdm import tqdm
 from pathlib import Path
 import pickle
 
-from stringart.core.stringimage import StringArtImage
-from stringart.algorithm.lines import draw_line
+from stringart.core.stringimage import StringImage
+from stringart.core.lines import draw_line
 
-def make_line_dict(data_folder:str, string_art_img: StringArtImage, closest_neighbors: int = 10):
+def make_line_dict(data_folder:str, string_art_img: StringImage, closest_neighbors: int = 10):
     """
     Makes a dictionary of every pixel and its darkness value for each line for every possible combination of anchors
 

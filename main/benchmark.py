@@ -12,13 +12,11 @@ import cProfile
 
 from stringart.preprocessing.image import BaseImage, create_mask, apply_mask, create_anchors
 from stringart.preprocessing.importancemaps import open_importance_maps, outline_importance_map, combine_importance_maps, background_importance_map
-from stringart.core.stringimage import StringArtImage
+from stringart.core.stringimage import StringImage
 from stringart.preprocessing.linedicts import make_line_dict
 from stringart.algorithm.execute import create_string_art
 from stringart.utils.io import save_string_art, load_string_art, save_instructions
 from stringart.algorithm.costmethod import CostMethod
-
-from stringart.algorithm.gpu.exec_gpu import create_string_art_gpu
 
 THREAD_WIDTH = 0.2
 PLATE_DIAMETER = 300
@@ -34,7 +32,7 @@ mask = create_mask(base_img.img)
 base_img.img = apply_mask(base_img.img, mask)
 anchors = create_anchors(img=base_img.img, num_anchors=NUM_ANCHORS)
 
-string_art_img = StringArtImage(base_image=base_img, anchors=anchors, line_darkness=0.2, mask=mask)
+string_art_img = StringImage(base_image=base_img, anchors=anchors, line_darkness=0.2, mask=mask)
 
 importance_maps = open_importance_maps(folder_path="./data/importance_maps/tom/", string_art_img_shape=string_art_img.img.shape)
 # TODO: make a way to increase contrast
